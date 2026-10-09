@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "td-hot"
+version = "0.1.0"
+description = "Reusable DeepForest tree-crown detector helpers for HOT fAIr model onboarding."
+readme = "README.md"
+requires-python = ">=3.12"
+# Inference core only: numpy/Pillow for pre/decode, rasterio/pyproj for georeferencing.
+dependencies = [
+    "numpy>=1.26",
+    "Pillow>=10.0",
+    "pyproj>=3.6",
+    "rasterio>=1.3",
+]
+
+[project.optional-dependencies]
+# Export-only: builds the torchvision RetinaNet, loads NEON.pt and writes ONNX.
+train = [
+    "onnx>=1.17",
+    "onnxscript>=0.1",
+    "torch>=2.4",
+    "torchvision>=0.19",
+]
+test = [
+    "onnxruntime>=1.18",
+    "pytest>=8.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/td_hot"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Integration tests need local weights + the `train` extra; run with `-m integration`.
+addopts = "-m 'not integration'"
+markers = ["integration: needs weights/NEON.pt and the train extra (opt-in)"]
+
+[tool.ruff]
+line-length = 110
