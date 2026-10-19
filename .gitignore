@@ -6,3 +6,9 @@ __pycache__/
 *.onnx
 weights/
 lightning_logs/
+
+
+
+.claude/
+.claude.rar
+.claude.zip
