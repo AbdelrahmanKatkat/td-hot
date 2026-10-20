@@ -1,3 +1,5 @@
+import pytest
+
 from td_hot.dataset import spatial_split
 
 
@@ -19,7 +21,7 @@ def test_whole_blocks_stay_together():
     assert {block(n) for n in train}.isdisjoint({block(n) for n in val})
 
 
-def test_unmatched_names_fill_validation_and_empty_input():
-    train, val = spatial_split(["a.tif", "b.tif", "c.tif", "d.tif", "e.tif"], 0.4, 0)
-    assert len(val) == 2 and len(train) == 3
+def test_non_oam_name_raises_and_empty_input():
+    with pytest.raises(ValueError, match="OAM"):
+        spatial_split(["OAM-1-2-3.tif", "a.tif"], 0.4, 0)
     assert spatial_split([], 0.2, 0) == ([], [])

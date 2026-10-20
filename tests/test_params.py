@@ -5,6 +5,7 @@ from td_hot.params import (
     parse_postprocess_params,
     parse_preprocess_params,
     parse_split_params,
+    parse_train_params,
 )
 
 
@@ -48,3 +49,23 @@ def test_split_params():
     assert parse_split_params({"val_ratio": 0.3, "split_seed": 7}).split_seed == 7
     with pytest.raises(ValueError):
         parse_split_params({"val_ratio": 0.0})
+
+
+def test_train_params_defaults_and_validation():
+    cfg = parse_train_params({})
+    assert cfg.epochs >= 1 and cfg.batch_size >= 1
+    with pytest.raises(ValueError):
+        parse_train_params({"epochs": 0})
+
+
+def test_train_params_overrides_alias_and_bounds():
+    cfg = parse_train_params({"lr": "0.001", "freeze_backbone": "true", "epochs": 3, "seed": None})
+    assert cfg.learning_rate == 0.001 and cfg.freeze_backbone is True and cfg.epochs == 3 and cfg.seed == 42
+    for bad in (
+        {"learning_rate": 0},
+        {"sample_fraction": 1.5},
+        {"early_stop_patience": 0},
+        {"freeze_backbone": "maybe"},
+    ):
+        with pytest.raises(ValueError):
+            parse_train_params(bad)

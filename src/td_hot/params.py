@@ -48,6 +48,21 @@ class InferenceParams:
     iou_threshold: float = 0.15
 
 
+@dataclass(frozen=True)
+class TrainParams:
+    """Torchvision RetinaNet fine-tuning knobs (kept minimal and fAIr-friendly)."""
+
+    epochs: int = 5
+    batch_size: int = 1
+    learning_rate: float = 1e-4
+    weight_decay: float = 0.0
+    early_stop_patience: int = 5
+    freeze_backbone: bool = False
+    sample_fraction: float = 1.0
+    device: str = "auto"  # cuda if visible, else cpu
+    seed: int = 42  # shuffling and `sample_fraction` subsampling
+
+
 def _get(d: Mapping[str, Any], keys: tuple[str, ...], default: Any) -> Any:
     """First present non-None key wins (canonical key first, then aliases)."""
     for key in keys:
@@ -66,6 +81,20 @@ def _as_float(v: Any) -> float:
     if isinstance(v, bool):
         raise ValueError("bool is not a valid float here")
     return float(v)
+
+
+def _as_bool(v: Any) -> bool:
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return bool(v)
+    if isinstance(v, str):
+        raw = v.strip().lower()
+        if raw in {"1", "true", "yes", "y", "on"}:
+            return True
+        if raw in {"0", "false", "no", "n", "off"}:
+            return False
+    raise ValueError(f"Expected bool-like value, got {v!r}")
 
 
 def _check_unit(name: str, v: float, *, low_open: bool = False) -> float:
@@ -130,4 +159,36 @@ def parse_inference_params(params: Mapping[str, Any] | None) -> InferenceParams:
         confidence_threshold=post.confidence_threshold,
         nms_threshold=post.nms_threshold,
         iou_threshold=post.iou_threshold,
+    )
+
+
+def parse_train_params(params: Mapping[str, Any] | None) -> TrainParams:
+    """Parse training knobs from a flat dict (fAIr strips the `training.` prefix)."""
+    p = params or {}
+    epochs = _as_int(_get(p, ("epochs",), TrainParams.epochs))
+    batch_size = _as_int(_get(p, ("batch_size",), TrainParams.batch_size))
+    learning_rate = _as_float(_get(p, ("learning_rate", "lr"), TrainParams.learning_rate))
+    weight_decay = _as_float(_get(p, ("weight_decay",), TrainParams.weight_decay))
+    patience = _as_int(_get(p, ("early_stop_patience",), TrainParams.early_stop_patience))
+    sample_fraction = _as_float(_get(p, ("sample_fraction",), TrainParams.sample_fraction))
+    for name, ok, value in (
+        ("epochs", epochs >= 1, epochs),
+        ("batch_size", batch_size >= 1, batch_size),
+        ("learning_rate", learning_rate > 0, learning_rate),
+        ("weight_decay", weight_decay >= 0, weight_decay),
+        ("early_stop_patience", patience >= 1, patience),
+        ("sample_fraction", 0.0 < sample_fraction <= 1.0, sample_fraction),
+    ):
+        if not ok:
+            raise ValueError(f"{name} out of range, got {value}")
+    return TrainParams(
+        epochs=epochs,
+        batch_size=batch_size,
+        learning_rate=learning_rate,
+        weight_decay=weight_decay,
+        early_stop_patience=patience,
+        freeze_backbone=_as_bool(_get(p, ("freeze_backbone",), TrainParams.freeze_backbone)),
+        sample_fraction=sample_fraction,
+        device=str(_get(p, ("device",), TrainParams.device)),
+        seed=_as_int(_get(p, ("seed",), TrainParams.seed)),
     )

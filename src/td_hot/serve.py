@@ -46,11 +46,7 @@ def predict_chip(session: Any, image_path: str | Path, params: dict[str, Any] | 
 
 
 def predict_session(session: Any, input_images: str | Path, params: dict[str, Any] | None) -> dict[str, Any]:
-    """Run ONNX prediction for all chips in a directory.
-
-    Called from `models/<name>/pipeline.py::predict`. `session` is an onnxruntime
-    InferenceSession on the exported RetinaNet (outputs: cls_logits, bbox_regression).
-    """
+    """Run ONNX prediction for all chips in a directory."""
     features: list[dict[str, Any]] = []
     for img_path in iter_image_paths(input_images):
         features.extend(predict_chip(session, img_path, params)["features"])

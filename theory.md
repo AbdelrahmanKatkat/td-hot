@@ -156,7 +156,7 @@ Neighbouring chips share canopy and trees cut at chip borders, and windows overl
 1. parse OAM tile names `OAM-<x>-<y>-<z>.ext`;
 2. group chips into blocks `(x // block_size, y // block_size)`;
 3. shuffle blocks with `numpy.default_rng(seed)`; fill validation with **whole blocks** until `val_ratio` is reached; the rest is train;
-4. names not matching the pattern are shuffled and only fill leftover validation slots.
+4. a name not matching the pattern raises `ValueError` (fAIr training chips are always OAM tiles).
 
 Deterministic for a given seed, disjoint, full cover [V, tested]. This is a **design choice [P]**; the 2019 paper evaluates on separately hand-annotated images at a site and I did not verify its exact split procedure. Evaluating a fine-tuned model on windows of the same tile it trained on must be avoided for the same leakage reason.
 

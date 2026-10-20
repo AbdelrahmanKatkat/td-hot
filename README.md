@@ -55,8 +55,10 @@ uv run pytest -m integration          # opt-in: torchvision/ONNX parity, needs w
 
 ## Not done yet
 
-- Fine-tuning (dataset conversion, training, evaluation) is not implemented; `val_ratio`, `split_seed` and
-  `block_size` are parsed and `spatial_split` exists for it.
+- Fine-tuning support is now available in the helper library:
+  - `td_hot.dataset.prepare_detection_dataset_from_geojson` (label-prep + split)
+  - `td_hot.train.train_retinanet` (torchvision RetinaNet fine-tune; `train` extra)
+  - `td_hot.evaluate.evaluate_retinanet` (precision/recall/F1 on chip-pixel boxes; `train` extra)
 - The fAIr-models pack (`pipeline.py`, `stac-item.json`, Docker) is not written, so integration with the
   fAIr-models validator is unverified. Pin this library there by Git tag or commit SHA.
 - Accuracy on OpenAerialMap imagery (not 10 cm NEON) is unmeasured; see `theory.md` 8.3.
