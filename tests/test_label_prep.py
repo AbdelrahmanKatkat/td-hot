@@ -1,5 +1,6 @@
 import json
 
+import numpy as np
 import pytest
 
 from td_hot.dataset import prepare_detection_dataset_from_geojson
@@ -156,3 +157,15 @@ def test_non_empty_output_dir_is_rejected(write_chip, tmp_path):
             out_dir=out_dir,
             split_cfg=SplitParams(val_ratio=0.5, split_seed=1, block_size=4),
         )
+
+
+@pytest.mark.filterwarnings("ignore::rasterio.errors.NotGeoreferencedWarning")
+def test_chip_without_georeferencing_is_rejected(tmp_path):
+    from PIL import Image
+
+    from td_hot.dataset import boxes_for_chip
+
+    png = tmp_path / "OAM-524288-524288-20.png"
+    Image.new("RGB", (256, 256)).save(png)
+    with pytest.raises(ValueError, match="no CRS"):
+        boxes_for_chip(png, label_bounds=np.zeros((1, 4)), labels_crs="EPSG:3857")

@@ -11,21 +11,23 @@ from torch.nn.modules.batchnorm import _BatchNorm
 
 from .dataset import list_chip_paths
 from .export import build_retinanet
-from .params import TrainParams
-from .preprocess import read_rgb_chip
+from .params import PreprocessParams, TrainParams
+from .preprocess import preprocess_array, read_rgb_chip
+from .tiles import chip_scale
 
 
 class DetectionDataset(torch.utils.data.Dataset):
     """Chips + `labels.json` (from `prepare_detection_dataset_from_geojson`) as torchvision targets.
 
-    Images are `(3, H, W)` float in [0, 1]; torchvision's own transform then does the same
-    normalise / resize-to-800 / pad that `preprocess.py` replicates for inference.
+    Each chip is scaled exactly as at serving time (`preprocess_array`, scale from the OAM zoom) and
+    its boxes are scaled with it. The model's own transform then only normalises and pads.
     """
 
-    def __init__(self, images_dir: str | Path, labels_json: str | Path) -> None:
+    def __init__(self, images_dir: str | Path, labels_json: str | Path, pre: PreprocessParams) -> None:
+        self.pre = pre
         self.paths = list_chip_paths(images_dir)
         if not self.paths:
-            raise ValueError(f"No GeoTIFF chips found in {images_dir}")
+            raise ValueError(f"No chips found in {images_dir}")
         labels = json.loads(Path(labels_json).read_text(encoding="utf-8"))
         if not isinstance(labels, dict):
             raise ValueError("labels.json must map chip filename -> list of boxes")
@@ -37,10 +39,11 @@ class DetectionDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         path = self.paths[idx]
         rgb, _, _ = read_rgb_chip(path)
-        image = torch.from_numpy(rgb).permute(2, 0, 1).float() / 255.0
+        scaled, meta = preprocess_array(rgb, chip_scale(path.name, rgb.shape[1], self.pre.model_gsd_m))
         boxes = np.asarray(
             [[b["x1"], b["y1"], b["x2"], b["y2"]] for b in self.labels.get(path.name, [])], dtype=np.float32
-        ).reshape(-1, 4)
+        ).reshape(-1, 4) * np.asarray([meta.scale_x, meta.scale_y] * 2, dtype=np.float32)
+        image = torch.from_numpy(scaled)
         # One class (`Tree`, id 0); RetinaNet has no background label. Empty box lists are negatives.
         return image, {
             "boxes": torch.from_numpy(boxes),
@@ -107,17 +110,20 @@ def train_retinanet(
     val_images_dir: str | Path | None,
     val_labels_json: str | Path | None,
     cfg: TrainParams,
+    pre: PreprocessParams | None = None,
     checkpoint_path: str | Path | None = None,
 ) -> TrainResult:
     """Fine-tune the one-class RetinaNet on chip-pixel boxes; keep the best epoch.
 
     `checkpoint_path` is the DeepForest `NEON.pt` state dict (loaded strict). Without it the model
-    starts from random weights. Export the result with `td_hot.export.export_onnx_bytes`.
+    starts from random weights. `pre.model_gsd_m` must be the value used at serving time. Export the
+    result with `td_hot.export.export_onnx_bytes`.
     """
+    pre = pre or PreprocessParams()
     device = _resolve_device(cfg.device)
     torch.manual_seed(cfg.seed)
 
-    train_ds: Any = DetectionDataset(train_images_dir, train_labels_json)
+    train_ds: Any = DetectionDataset(train_images_dir, train_labels_json, pre)
     if cfg.sample_fraction < 1.0:
         n = max(1, round(len(train_ds) * cfg.sample_fraction))
         keep = np.random.default_rng(cfg.seed).permutation(len(train_ds))[:n].tolist()
@@ -132,7 +138,7 @@ def train_retinanet(
     val_loader = None
     if val_images_dir is not None and val_labels_json is not None:
         val_loader = torch.utils.data.DataLoader(
-            DetectionDataset(val_images_dir, val_labels_json),
+            DetectionDataset(val_images_dir, val_labels_json, pre),
             batch_size=cfg.batch_size,
             shuffle=False,
             collate_fn=_collate,

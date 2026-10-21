@@ -6,8 +6,8 @@ from typing import Any
 import numpy as np
 
 from .dataset import list_chip_paths
-from .decode import decode_retinanet_output, merge_window_detections
-from .georef import window_to_chip
+from .decode import decode_detections
+from .georef import detections_to_chip
 from .params import parse_postprocess_params, parse_preprocess_params
 from .preprocess import preprocess_chip
 
@@ -64,7 +64,7 @@ def match_detections(
 def predict_chip_torch(
     model: Any, image_path: str | Path, params: dict[str, Any] | None
 ) -> list[dict[str, float | int]]:
-    """Torch model -> numpy decode pipeline -> merged chip-pixel detections.
+    """Torch model -> the same level-2 computation as the ONNX -> `decode_detections` -> chip pixels.
 
     Requires the `train` extra at runtime.
     """
@@ -72,31 +72,14 @@ def predict_chip_torch(
         import torch
     except ImportError as exc:  # pragma: no cover
         raise ImportError("Install td-hot with `[train]` extras to evaluate torch models.") from exc
+    from .export import level2_network
 
-    pre_cfg = parse_preprocess_params(params)
-    post_cfg = parse_postprocess_params(params)
-    batches, meta = preprocess_chip(image_path, pre_cfg)
-
+    image, meta = preprocess_chip(image_path, parse_preprocess_params(params))
     model.eval()
-    chip_dets: list[dict[str, float | int]] = []
     with torch.no_grad():
-        for batch, window in zip(batches, meta.windows):
-            t = torch.from_numpy(np.asarray(batch))
-            feats = list(model.backbone(t).values())
-            head = model.head(feats)
-            cls_logits = head["cls_logits"].detach().cpu().numpy()
-            bbox_reg = head["bbox_regression"].detach().cpu().numpy()
-            dets = decode_retinanet_output(
-                cls_logits,
-                bbox_reg,
-                input_hw=(int(batch.shape[2]), int(batch.shape[3])),
-                image_hw=(int(window.resized_height), int(window.resized_width)),
-                cfg=post_cfg,
-            )
-            for det in dets:
-                x1, y1, x2, y2 = window_to_chip(det, window)
-                chip_dets.append({**det, "x1": x1, "y1": y1, "x2": x2, "y2": y2})
-    return merge_window_detections(chip_dets, post_cfg.iou_threshold)
+        boxes, scores, labels = level2_network(model)(torch.from_numpy(image))
+    dets = decode_detections(boxes.numpy(), scores.numpy(), labels.numpy(), parse_postprocess_params(params))
+    return detections_to_chip(dets, meta)
 
 
 def evaluate_retinanet(

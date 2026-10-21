@@ -28,11 +28,15 @@ def write_chip(tmp_path):
     return _write
 
 
+# A tile near the equator at zoom 20: 14.9 cm/px, so a 256 px chip is scaled by about 2.99.
+CHIP_NAME = "OAM-524288-524288-20.tif"
+
+
 class FakeSession:
-    """Stands in for onnxruntime: returns zero logits (-> no detections) or a planted detection."""
+    """Stands in for onnxruntime: returns no candidates, or one planted candidate (level-2 contract)."""
 
     class _In:
-        name = "images"
+        name = "image"
 
     def __init__(self, plant: bool = False):
         self.plant = plant
@@ -42,13 +46,13 @@ class FakeSession:
         return [self._In()]
 
     def run(self, _outputs, feeds):
-        from td_hot.decode import make_anchors
-
-        batch = feeds["images"]
-        self.calls.append(batch.shape)
-        n = sum(len(a) for a in make_anchors(batch.shape[2], batch.shape[3]))
-        cls = np.full((1, n, 1), -10.0, dtype=np.float32)
-        box = np.zeros((1, n, 4), dtype=np.float32)
-        if self.plant:
-            cls[0, 0, 0] = 5.0  # anchor 0 (level P3, top-left): sigmoid(5) ~ 0.993
-        return [cls, box]
+        image = feeds["image"]
+        assert image.ndim == 3 and image.dtype == np.float32 and 0.0 <= image.min() <= image.max() <= 1.0
+        self.calls.append(image.shape)
+        if not self.plant:
+            return [np.zeros((0, 4), np.float32), np.zeros(0, np.float32), np.zeros(0, np.int64)]
+        return [
+            np.asarray([[100.0, 100.0, 200.0, 200.0]], np.float32),  # model-input pixels
+            np.asarray([0.99], np.float32),
+            np.asarray([0], np.int64),
+        ]

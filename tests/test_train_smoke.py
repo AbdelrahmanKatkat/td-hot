@@ -17,7 +17,7 @@ def test_train_and_evaluate_smoke(write_chip, tmp_path):
     chips, labels, out = tmp_path / "chips", tmp_path / "labels", tmp_path / "prepared"
     chips.mkdir()
     labels.mkdir()
-    for name in ("OAM-0-0-19.tif", "OAM-4-0-19.tif"):
+    for name in ("OAM-524288-524288-20.tif", "OAM-524292-524288-20.tif"):
         (chips / name).write_bytes(write_chip(name=name).read_bytes())
     box = [[[1_000_010, 1_999_980], [1_000_040, 1_999_980], [1_000_040, 1_999_950], [1_000_010, 1_999_950]]]
     fc = {

@@ -1,20 +1,31 @@
-"""Window/model pixels -> chip pixels -> EPSG:4326 polygons (no ONNX layout knowledge)."""
+"""Model pixels -> chip pixels -> EPSG:4326 polygons (no ONNX layout knowledge)."""
 
 from typing import Any
 
 from pyproj import Transformer
 
-from .preprocess import WindowMeta
+from .preprocess import PreprocessMeta
 
 
-def window_to_chip(det: dict[str, float | int], window: WindowMeta) -> tuple[float, float, float, float]:
-    """Undo the model resize, then add the window offset -> source chip pixels."""
+def resized_to_chip(det: dict[str, float | int], meta: PreprocessMeta) -> tuple[float, float, float, float]:
+    """Undo the model resize -> source chip pixels."""
     return (
-        det["x1"] / window.scale_x + window.x,
-        det["y1"] / window.scale_y + window.y,
-        det["x2"] / window.scale_x + window.x,
-        det["y2"] / window.scale_y + window.y,
+        det["x1"] / meta.scale_x,
+        det["y1"] / meta.scale_y,
+        det["x2"] / meta.scale_x,
+        det["y2"] / meta.scale_y,
     )
+
+
+def detections_to_chip(
+    dets: list[dict[str, float | int]], meta: PreprocessMeta
+) -> list[dict[str, float | int]]:
+    """Detections in model-input pixels -> the same detections in source-chip pixels."""
+    out = []
+    for det in dets:
+        x1, y1, x2, y2 = resized_to_chip(det, meta)
+        out.append({**det, "x1": x1, "y1": y1, "x2": x2, "y2": y2})
+    return out
 
 
 def clip_xyxy_to_image(

@@ -1,18 +1,31 @@
-"""Defaults and dict -> dataclass parsing for `td-hot`.
+"""Constants, defaults and dict -> dataclass parsing for `td-hot`.
 
-Parsers tolerate `None` / missing keys. Defaults mirror DeepForest 2.1.0
-(`conf/config.yaml`, `main.predict_tile`); see theory.md section 6.
+Parsers tolerate `None` / missing keys. Defaults mirror DeepForest 2.1.0 (`conf/config.yaml`);
+the model contract they belong to is documented in theory.md sections 2-6.
+
+Where each value lives (the "level 2" ONNX contract):
+- inside the ONNX graph: `IMAGE_MEAN`/`IMAGE_STD` normalisation, padding, backbone + FPN + head,
+  anchors, box decode, `TOPK_CANDIDATES` per level, clipping. Fixed by `export.build_retinanet`.
+- outside, tunable: scale (`PreprocessParams`), confidence filter, NMS (`PostprocessParams`).
 """
 
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-# torchvision GeneralizedRCNNTransform defaults, used unchanged by DeepForest (theory.md 2.2).
-MIN_SIZE = 800
-MAX_SIZE = 1333
-SIZE_DIVISIBLE = 32
+# --- model constants (not stored in the checkpoint; `export.build_retinanet` is the single owner) ---
+# ImageNet statistics, used unchanged by DeepForest (torchvision transform default).
 IMAGE_MEAN = (0.485, 0.456, 0.406)
 IMAGE_STD = (0.229, 0.224, 0.225)
+TOPK_CANDIDATES = 1000  # per FPN level, before NMS (inside the graph)
+DETECTIONS_PER_IMG = 300  # after NMS (outside the graph)
+
+# --- scale policy ---
+# NEON training: 10 cm/px imagery cut into 400 px windows and upscaled to 800 px by torchvision,
+# so one model pixel covers 0.10 m * 400 / 800 = 0.05 m of ground.
+MODEL_GSD_M = 0.05
+# Refuse inputs that would be upscaled beyond this (a 256 px chip would exceed 2048 px, i.e. a zoom
+# that is far too coarse for this model). Not measured above 15.6 cm/px, see theory.md section 7.1.
+MAX_SCALE = 8.0
 
 
 @dataclass(frozen=True)
@@ -24,28 +37,17 @@ class SplitParams:
 
 @dataclass(frozen=True)
 class PreprocessParams:
-    """Sliding-window controls (applied to the source chip, before the model resize)."""
+    """How a chip is scaled before the model. Training and serving must use the same value."""
 
-    patch_size: int = 400
-    patch_overlap: float = 0.05
+    model_gsd_m: float = MODEL_GSD_M  # ground size of one model-input pixel, metres
 
 
 @dataclass(frozen=True)
 class PostprocessParams:
-    """Model-space decode and window-merge thresholds."""
+    """Thresholds applied outside the ONNX graph (which returns candidates before NMS)."""
 
     confidence_threshold: float = 0.1
-    nms_threshold: float = 0.05  # per-window NMS (RetinaNet.nms_thresh)
-    iou_threshold: float = 0.15  # cross-window NMS (predict_tile iou_threshold)
-
-
-@dataclass(frozen=True)
-class InferenceParams:
-    patch_size: int = 400
-    patch_overlap: float = 0.05
-    confidence_threshold: float = 0.1
-    nms_threshold: float = 0.05
-    iou_threshold: float = 0.15
+    nms_threshold: float = 0.05  # RetinaNet.nms_thresh, across all candidates of the chip
 
 
 @dataclass(frozen=True)
@@ -120,14 +122,12 @@ def parse_split_params(hyperparameters: Mapping[str, Any] | None) -> SplitParams
 
 
 def parse_preprocess_params(params: Mapping[str, Any] | None) -> PreprocessParams:
+    """`model_gsd_m`: metres of ground per model-input pixel (default 0.05, the NEON training scale)."""
     p = params or {}
-    patch_size = _as_int(_get(p, ("patch_size",), PreprocessParams.patch_size))
-    patch_overlap = _as_float(_get(p, ("patch_overlap",), PreprocessParams.patch_overlap))
-    if patch_size < 32:
-        raise ValueError(f"patch_size must be >= 32, got {patch_size}")
-    if not 0.0 <= patch_overlap < 1.0:
-        raise ValueError(f"patch_overlap must be in [0, 1), got {patch_overlap}")
-    return PreprocessParams(patch_size=patch_size, patch_overlap=patch_overlap)
+    model_gsd_m = _as_float(_get(p, ("model_gsd_m",), PreprocessParams.model_gsd_m))
+    if not 0.005 <= model_gsd_m <= 1.0:
+        raise ValueError(f"model_gsd_m must be in [0.005, 1.0] metres, got {model_gsd_m}")
+    return PreprocessParams(model_gsd_m=model_gsd_m)
 
 
 def parse_postprocess_params(params: Mapping[str, Any] | None) -> PostprocessParams:
@@ -144,21 +144,6 @@ def parse_postprocess_params(params: Mapping[str, Any] | None) -> PostprocessPar
             "nms_threshold",
             _as_float(_get(p, ("nms_threshold", "nms_thresh"), PostprocessParams.nms_threshold)),
         ),
-        iou_threshold=_check_unit(
-            "iou_threshold", _as_float(_get(p, ("iou_threshold",), PostprocessParams.iou_threshold))
-        ),
-    )
-
-
-def parse_inference_params(params: Mapping[str, Any] | None) -> InferenceParams:
-    pre = parse_preprocess_params(params)
-    post = parse_postprocess_params(params)
-    return InferenceParams(
-        patch_size=pre.patch_size,
-        patch_overlap=pre.patch_overlap,
-        confidence_threshold=post.confidence_threshold,
-        nms_threshold=post.nms_threshold,
-        iou_threshold=post.iou_threshold,
     )
 
 

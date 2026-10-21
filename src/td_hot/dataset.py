@@ -5,7 +5,6 @@
 """
 
 import json
-import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -13,8 +12,7 @@ from typing import Any
 import numpy as np
 
 from .params import SplitParams
-
-OAM_TILE_RE = re.compile(r"^OAM-(\d+)-(\d+)-(\d+)\.(tif|tiff|png|jpg|jpeg)$", re.IGNORECASE)
+from .tiles import OAM_TILE_RE
 
 
 def spatial_split(
@@ -46,10 +44,14 @@ def spatial_split(
     return sorted(train), sorted(val)
 
 
+CHIP_PATTERNS = ("*.tif", "*.tiff", "*.png", "*.jpg", "*.jpeg")
+
+
 def list_chip_paths(root: str | Path) -> list[Path]:
-    """GeoTIFF chips only; training reads georeferenced `.tif`/`.tiff` chips."""
+    """RGB chips in a folder. Training and evaluation read any of them (the scale comes from the OAM
+    name), but turning GeoJSON labels into pixel boxes needs georeferenced GeoTIFFs."""
     folder = Path(root)
-    return sorted(p for p in [*folder.glob("*.tif"), *folder.glob("*.tiff")] if p.is_file())
+    return sorted(p for pattern in CHIP_PATTERNS for p in folder.glob(pattern) if p.is_file())
 
 
 def _find_labels_geojson(labels_dir: str | Path) -> Path:
@@ -132,6 +134,8 @@ def boxes_for_chip(
 
     with rasterio.open(chip_path) as src:
         width, height, transform, crs = int(src.width), int(src.height), src.transform, src.crs
+    if crs is None:
+        raise ValueError(f"{chip_path} has no CRS; GeoJSON labels need a georeferenced GeoTIFF chip")
     if len(label_bounds) == 0:
         return []
 
@@ -159,7 +163,7 @@ def prepare_detection_dataset_from_geojson(
     split_cfg: SplitParams,
     class_id: int = 0,
 ) -> dict[str, Any]:
-    """Split OAM chips spatially and write per-split chips plus pixel-space box labels.
+    """Split OAM chips spatially and write per-split chips plus pixel-space box labels (GeoTIFF chips).
 
     Output layout:
     - `<out_dir>/train/images/*.tif` and `<out_dir>/train/labels.json`

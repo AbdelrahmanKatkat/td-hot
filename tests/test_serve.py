@@ -1,45 +1,60 @@
 import numpy as np
 import pytest
+from pyproj import Transformer
 
-from conftest import FakeSession
-from td_hot.georef import window_to_chip, xyxy_to_epsg4326_polygon
-from td_hot.preprocess import WindowMeta
+from conftest import CHIP_NAME, FakeSession
+from td_hot.georef import resized_to_chip, xyxy_to_epsg4326_polygon
+from td_hot.preprocess import PreprocessMeta
 from td_hot.serve import iter_image_paths, predict_session
+from td_hot.tiles import chip_scale
 
 
 def test_empty_predictions_give_valid_empty_collection(write_chip, tmp_path):
-    write_chip("a.tif")
+    write_chip(CHIP_NAME)
     fc = predict_session(FakeSession(), tmp_path, None)
     assert fc == {"type": "FeatureCollection", "features": []}
 
 
-def test_planted_detection_becomes_georeferenced_polygon(write_chip, tmp_path):
-    write_chip("OAM-1-2-3.tif", height=256, width=256)
+def test_chip_is_scaled_by_its_zoom_and_planted_box_lands_on_the_right_ground(write_chip, tmp_path):
+    write_chip(CHIP_NAME)
     session = FakeSession(plant=True)
     fc = predict_session(session, tmp_path, {})
-    assert session.calls == [(1, 3, 800, 800)]  # 256 px chip -> one window, resized to 800
+
+    scale = chip_scale(CHIP_NAME, 256, 0.05)
+    side = round(256 * scale)
+    assert session.calls == [(3, side, side)]  # one pass, one resize, CHW
+
     assert len(fc["features"]) == 1
     f = fc["features"][0]
     assert f["geometry"]["type"] == "Polygon" and len(f["geometry"]["coordinates"][0]) == 5
-    assert f["properties"]["class_name"] == "Tree" and f["properties"]["source"] == "OAM-1-2-3.tif"
-    lon, lat = f["geometry"]["coordinates"][0][0]
-    assert -180 <= lon <= 180 and -90 <= lat <= 90  # converted from EPSG:3857 to 4326
+    assert f["properties"]["class_name"] == "Tree" and f["properties"]["source"] == CHIP_NAME
     assert 0.9 < f["properties"]["confidence"] <= 1.0
 
-
-def test_large_chip_runs_multiple_windows_and_merges(write_chip, tmp_path):
-    write_chip("big.tif", height=500, width=900)
-    session = FakeSession(plant=True)
-    fc = predict_session(session, tmp_path, {"patch_size": 400, "patch_overlap": 0.05})
-    assert len(session.calls) == 3 * 2  # x offsets 0, 380, 500 ; y offsets 0, 100
-    # Planted box sits at each window's top-left; distinct windows -> distinct (non-overlapping) boxes survive NMS.
-    assert 1 <= len(fc["features"]) <= len(session.calls)
+    # Planted box (100, 100)-(200, 200) in model pixels -> chip pixels -> EPSG:3857 -> lon/lat.
+    # The chip fixture has its origin at (1_000_000, 2_000_000) with 1 m pixels.
+    ratio = side / 256
+    to_ll = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
+    expected = to_ll.transform(1_000_000 + 100 / ratio, 2_000_000 - 100 / ratio)
+    np.testing.assert_allclose(f["geometry"]["coordinates"][0][0], expected, atol=1e-9)
 
 
 def test_confidence_threshold_alias_filters_everything(write_chip, tmp_path):
-    write_chip("a.tif")
+    write_chip(CHIP_NAME)
     fc = predict_session(FakeSession(plant=True), tmp_path, {"score_thresh": 0.999})
     assert fc["features"] == []
+
+
+def test_model_gsd_param_changes_the_input_size(write_chip, tmp_path):
+    write_chip(CHIP_NAME)
+    session = FakeSession()
+    predict_session(session, tmp_path, {"model_gsd_m": 0.10})
+    assert session.calls[0][1] == round(256 * chip_scale(CHIP_NAME, 256, 0.10))
+
+
+def test_non_oam_chip_name_fails_loudly(write_chip, tmp_path):
+    write_chip("chip.tif")
+    with pytest.raises(ValueError, match="OAM"):
+        predict_session(FakeSession(), tmp_path, None)
 
 
 def test_no_images_raises(tmp_path):
@@ -47,10 +62,12 @@ def test_no_images_raises(tmp_path):
         iter_image_paths(tmp_path)
 
 
-def test_window_to_chip_inverts_resize_and_offset():
-    w = WindowMeta(x=380, y=100, width=400, height=400, resized_width=800, resized_height=800)
-    det = {"x1": 80.0, "y1": 40.0, "x2": 160.0, "y2": 120.0}
-    assert window_to_chip(det, w) == (420.0, 120.0, 460.0, 160.0)
+def test_resized_to_chip_inverts_resize():
+    meta = PreprocessMeta(
+        width=256, height=256, resized_width=800, resized_height=800, transform=None, crs=None
+    )
+    det = {"x1": 100.0, "y1": 40.0, "x2": 200.0, "y2": 120.0}
+    assert resized_to_chip(det, meta) == (32.0, 12.8, 64.0, 38.4)
 
 
 def test_polygon_in_epsg4326_passthrough():

@@ -7,10 +7,9 @@ __pycache__/
 weights/
 lightning_logs/
 
+# downloaded datasets and analysis cache
+data/
 
 
-.claude/
-.claude.rar
-.claude.zip
-
-CLAUDE.md
+# research
+research/
