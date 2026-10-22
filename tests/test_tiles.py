@@ -54,4 +54,4 @@ def test_chip_scale_is_gsd_over_model_gsd():
 
 def test_chip_scale_rejects_zooms_that_are_too_coarse():
     with pytest.raises(ValueError, match="too coarse"):
-        chip_scale("OAM-262144-262144-19.tif", 256, 0.02)  # 0.3 m/px chip, 2 cm model pixel -> x15
+        chip_scale("OAM-262144-262144-19.tif", 256, 0.01)  # 0.3 m/px chip, 1 cm model pixel -> x30

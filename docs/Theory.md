@@ -56,7 +56,7 @@ torchvision's `GeneralizedRCNNTransform(min_size=800, max_size=1333, ImageNet me
 In this library:
 1. **Normalisation** `(x - mean) / std`, mean `(0.485, 0.456, 0.406)`, std `(0.229, 0.224, 0.225)`: inside the ONNX graph.
 2. **Padding** to a multiple of 32: inside the ONNX graph.
-3. **Resize**: replaced by `preprocess.py`, with the scale taken from the chip's zoom (section 3) instead of "short side = 800". torchvision's resize is disabled in `build_retinanet`, so training and serving see identical pixels. The 1333 cap is not implemented: a 256 px chip would need a scale above 5.2 to reach it, and `MAX_SCALE = 8` already rejects zooms that coarse.
+3. **Resize**: replaced by `preprocess.py`, with the scale taken from the chip's zoom (section 3) instead of "short side = 800". torchvision's resize is disabled in `build_retinanet`, so training and serving see identical pixels. The 1333 cap is not implemented: a 256 px chip reaches it at a scale of 5.2 (zoom 19 is already at about 5.9 at Freetown), and `MAX_SCALE = 16` only rejects zooms coarser than 18. At zoom 18 a 256 px chip becomes about 2700 to 3000 px square, which is far outside what was trained or measured and costs several times the memory of a zoom 20 chip.
 
 ## 3. Preprocessing: scale from the zoom level
 
@@ -83,7 +83,7 @@ input size = round(chip size * scale)                                           
 
 `z`, and `y` (which gives the latitude) come from the chip name `OAM-<x>-<y>-<z>.<ext>` (`td_hot.tiles`). Nothing is read from the file, so PNG/JPEG chips work the same as GeoTIFFs. Examples for a 256 px chip: zoom 20 at the equator is 14.9 cm/px -> scale 2.99; the same zoom at 48 deg latitude is 10 cm/px -> scale 2.0. Ground resolution depends on `cos(latitude)`, so the latitude matters as much as the zoom; XYZ and TMS row numbering give the same value because `cos` is symmetric about the equator [V: formula, unit-tested].
 
-`PreprocessParams.model_gsd_m` (default 0.05, range [0.005, 1]) is the one knob. **Training and serving must use the same value**; `train_retinanet` takes the same `PreprocessParams` and scales chips and boxes with it [P]. Scales above 8 (a 256 px chip coarser than 40 cm/px) raise `ValueError`; behaviour between 15.6 and 40 cm is not measured [?].
+`PreprocessParams.model_gsd_m` (default 0.05, range [0.005, 1]) is the one knob. **Training and serving must use the same value**; `train_retinanet` takes the same `PreprocessParams` and scales chips and boxes with it [P]. Scales above 16 (a 256 px chip coarser than 80 cm/px) raise `ValueError`; behaviour between 15.6 and 40 cm is not measured [?].
 
 ### 3.3 Is the zoom always known? [V: checked, with limits]
 
@@ -141,7 +141,7 @@ All keys optional; `None`/missing -> default. Aliases are accepted, the canonica
 | `confidence_threshold` (alias `score_thresh`) | float | 0.1 | [0, 1] | decode | minimum sigmoid score; STAC default 0.38; the 2019 paper filtered at 0.2 |
 | `nms_threshold` (alias `nms_thresh`) | float | 0.05 | [0, 1] | decode | NMS IoU over all candidates of the chip (DeepForest `nms_thresh`; no rationale in its `config.yaml`) |
 
-Constants, not parameters: `IMAGE_MEAN`, `IMAGE_STD`, `TOPK_CANDIDATES = 1000` (fixed in the graph), `DETECTIONS_PER_IMG = 300`, `MAX_SCALE = 8`. Defaults come from DeepForest 2.1.0 `conf/config.yaml` [V].
+Constants, not parameters: `IMAGE_MEAN`, `IMAGE_STD`, `TOPK_CANDIDATES = 1000` (fixed in the graph), `DETECTIONS_PER_IMG = 300`, `MAX_SCALE = 16`. Defaults come from DeepForest 2.1.0 `conf/config.yaml` [V].
 
 ### 6.2 Split / training (`td_hot.params.TrainParams`)
 

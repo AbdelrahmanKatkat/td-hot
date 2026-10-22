@@ -23,9 +23,10 @@ DETECTIONS_PER_IMG = 300  # after NMS (outside the graph)
 # NEON training: 10 cm/px imagery cut into 400 px windows and upscaled to 800 px by torchvision,
 # so one model pixel covers 0.10 m * 400 / 800 = 0.05 m of ground.
 MODEL_GSD_M = 0.05
-# Refuse inputs that would be upscaled beyond this (a 256 px chip would exceed 2048 px, i.e. a zoom
-# that is far too coarse for this model). Not measured above 15.6 cm/px, see docs/Theory.md section 7.1.
-MAX_SCALE = 8.0
+# Refuse inputs that would be upscaled beyond this (a 256 px chip would exceed 4096 px, i.e. a zoom
+# that is far too coarse for this model). Zoom 18 needs 10.6 (latitude 28) to 11.9 (equator), so it is
+# accepted, but that scale is far outside what the model was trained or measured on (about 3x at zoom 20).
+MAX_SCALE = 16.0
 
 # ResNet-50 stages of the encoder, shallow to deep; `unfreeze_from` picks the first one that trains.
 ENCODER_STAGES = ("layer1", "layer2", "layer3", "layer4")
