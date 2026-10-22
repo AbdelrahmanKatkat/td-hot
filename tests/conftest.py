@@ -28,6 +28,39 @@ def write_chip(tmp_path):
     return _write
 
 
+@pytest.fixture
+def prepared_dataset(write_chip, tmp_path):
+    """Two zoom-20 chips and one box label, split into `prepared/{train,val}/{images,labels.json}`."""
+    import json
+    import shutil
+
+    from td_hot.dataset import labels_for_chips, spatial_split
+
+    chips, labels, out = tmp_path / "chips", tmp_path / "labels", tmp_path / "prepared"
+    chips.mkdir()
+    labels.mkdir()
+    for name in ("OAM-524288-524288-20.tif", "OAM-524292-524288-20.tif"):
+        (chips / name).write_bytes(write_chip(name=name).read_bytes())
+    box = [[[1_000_010, 1_999_980], [1_000_040, 1_999_980], [1_000_040, 1_999_950], [1_000_010, 1_999_950]]]
+    feature = {"type": "Feature", "properties": {}, "geometry": {"type": "Polygon", "coordinates": box}}
+    collection = {
+        "type": "FeatureCollection",
+        "crs": {"type": "name", "properties": {"name": "EPSG:3857"}},
+        "features": [feature],
+    }
+    (labels / "labels.geojson").write_text(json.dumps(collection), encoding="utf-8")
+    all_labels = labels_for_chips(chips, labels)
+    train, val = spatial_split(sorted(all_labels), 0.5, 42, block_size=4)
+    for split, names in (("train", train), ("val", val)):
+        (out / split / "images").mkdir(parents=True)
+        for name in names:
+            shutil.copy2(chips / name, out / split / "images" / name)
+        (out / split / "labels.json").write_text(
+            json.dumps({n: all_labels[n] for n in names}), encoding="utf-8"
+        )
+    return out
+
+
 # A tile near the equator at zoom 20: 14.9 cm/px, so a 256 px chip is scaled by about 2.99.
 CHIP_NAME = "OAM-524288-524288-20.tif"
 

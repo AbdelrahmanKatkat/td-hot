@@ -1,7 +1,7 @@
 """Constants, defaults and dict -> dataclass parsing for `td-hot`.
 
 Parsers tolerate `None` / missing keys. Defaults mirror DeepForest 2.1.0 (`conf/config.yaml`);
-the model contract they belong to is documented in theory.md sections 2-6.
+the model contract they belong to is documented in docs/Theory.md sections 2-6.
 
 Where each value lives (the "level 2" ONNX contract):
 - inside the ONNX graph: `IMAGE_MEAN`/`IMAGE_STD` normalisation, padding, backbone + FPN + head,
@@ -24,8 +24,11 @@ DETECTIONS_PER_IMG = 300  # after NMS (outside the graph)
 # so one model pixel covers 0.10 m * 400 / 800 = 0.05 m of ground.
 MODEL_GSD_M = 0.05
 # Refuse inputs that would be upscaled beyond this (a 256 px chip would exceed 2048 px, i.e. a zoom
-# that is far too coarse for this model). Not measured above 15.6 cm/px, see theory.md section 7.1.
+# that is far too coarse for this model). Not measured above 15.6 cm/px, see docs/Theory.md section 7.1.
 MAX_SCALE = 8.0
+
+# ResNet-50 stages of the encoder, shallow to deep; `unfreeze_from` picks the first one that trains.
+ENCODER_STAGES = ("layer1", "layer2", "layer3", "layer4")
 
 
 @dataclass(frozen=True)
@@ -52,17 +55,38 @@ class PostprocessParams:
 
 @dataclass(frozen=True)
 class TrainParams:
-    """Torchvision RetinaNet fine-tuning knobs (kept minimal and fAIr-friendly)."""
+    """Torchvision RetinaNet fine-tuning knobs; the defaults are the recipe of the fAIr `deepforest_tree` pack.
+
+    SGD with momentum 0.9, gradient clipping and a cosine schedule. The ResNet encoder is frozen by default
+    (BatchNorm always is), so fine-tuning only moves the FPN and the heads: this limits catastrophic forgetting
+    of what the checkpoint learned on NEON. Set `freeze_encoder=False` only with plenty of target data.
+    """
 
     epochs: int = 5
-    batch_size: int = 1
-    learning_rate: float = 1e-4
-    weight_decay: float = 0.0
-    early_stop_patience: int = 5
-    freeze_backbone: bool = False
-    sample_fraction: float = 1.0
-    device: str = "auto"  # cuda if visible, else cpu
-    seed: int = 42  # shuffling and `sample_fraction` subsampling
+    batch_size: int = 2
+    learning_rate: float = 1e-3
+    weight_decay: float = 1e-4
+    max_grad_norm: float = 1.0  # 0 disables clipping
+    scheduler: str = (
+        "cosine"  # "cosine" | "none"; cosine decays to 0 over all steps of the run (stepped per batch)
+    )
+    warmup_steps: int = 0  # linear learning-rate ramp over the first batches (0 = none)
+    freeze_encoder: bool = True
+    unfreeze_from: str = (
+        "none"  # with freeze_encoder: still train ResNet stages from here on ("layer4", "layer3", ...)
+    )
+    encoder_lr_factor: float = (
+        1.0  # learning-rate multiplier for the encoder weights that do train (1.0 = same as the heads)
+    )
+    early_stop_patience: int = (
+        5  # epochs without a better loss before stopping (>= epochs: never stops early)
+    )
+    sample_fraction: float = 1.0  # one fixed random subset of the training tiles for the whole run
+    epoch_fraction: float = (
+        1.0  # each epoch trains on a fresh random fraction of the tiles (1.0 = all of them)
+    )
+    device: str = "auto"  # cuda if visible, else cpu (training is meant to run on a GPU)
+    seed: int = 42  # shuffling, augmentation and `sample_fraction` subsampling
 
 
 def _get(d: Mapping[str, Any], keys: tuple[str, ...], default: Any) -> Any:
@@ -156,6 +180,13 @@ def parse_train_params(params: Mapping[str, Any] | None) -> TrainParams:
     weight_decay = _as_float(_get(p, ("weight_decay",), TrainParams.weight_decay))
     patience = _as_int(_get(p, ("early_stop_patience",), TrainParams.early_stop_patience))
     sample_fraction = _as_float(_get(p, ("sample_fraction",), TrainParams.sample_fraction))
+    epoch_fraction = _as_float(_get(p, ("epoch_fraction",), TrainParams.epoch_fraction))
+    warmup_steps = _as_int(_get(p, ("warmup_steps",), TrainParams.warmup_steps))
+    max_grad_norm = _as_float(_get(p, ("max_grad_norm",), TrainParams.max_grad_norm))
+    scheduler = str(_get(p, ("scheduler",), TrainParams.scheduler)).strip().lower()
+    unfreeze_from = str(_get(p, ("unfreeze_from",), TrainParams.unfreeze_from)).strip().lower()
+    encoder_lr_factor = _as_float(_get(p, ("encoder_lr_factor",), TrainParams.encoder_lr_factor))
+    freeze_encoder = _as_bool(_get(p, ("freeze_encoder", "freeze_backbone"), TrainParams.freeze_encoder))
     for name, ok, value in (
         ("epochs", epochs >= 1, epochs),
         ("batch_size", batch_size >= 1, batch_size),
@@ -163,17 +194,33 @@ def parse_train_params(params: Mapping[str, Any] | None) -> TrainParams:
         ("weight_decay", weight_decay >= 0, weight_decay),
         ("early_stop_patience", patience >= 1, patience),
         ("sample_fraction", 0.0 < sample_fraction <= 1.0, sample_fraction),
+        ("epoch_fraction", 0.0 < epoch_fraction <= 1.0, epoch_fraction),
+        ("warmup_steps", warmup_steps >= 0, warmup_steps),
+        ("max_grad_norm", max_grad_norm >= 0, max_grad_norm),
+        ("scheduler", scheduler in ("cosine", "none"), scheduler),
+        ("unfreeze_from", unfreeze_from in ENCODER_STAGES + ("none",), unfreeze_from),
+        ("encoder_lr_factor", 0.0 < encoder_lr_factor <= 1.0, encoder_lr_factor),
     ):
         if not ok:
             raise ValueError(f"{name} out of range, got {value}")
+    if unfreeze_from != "none" and not freeze_encoder:
+        raise ValueError(
+            "unfreeze_from needs freeze_encoder=True (with freeze_encoder=False the whole encoder trains)"
+        )
     return TrainParams(
         epochs=epochs,
         batch_size=batch_size,
         learning_rate=learning_rate,
         weight_decay=weight_decay,
+        max_grad_norm=max_grad_norm,
+        scheduler=scheduler,
+        warmup_steps=warmup_steps,
         early_stop_patience=patience,
-        freeze_backbone=_as_bool(_get(p, ("freeze_backbone",), TrainParams.freeze_backbone)),
+        freeze_encoder=freeze_encoder,
+        unfreeze_from=unfreeze_from,
+        encoder_lr_factor=encoder_lr_factor,
         sample_fraction=sample_fraction,
+        epoch_fraction=epoch_fraction,
         device=str(_get(p, ("device",), TrainParams.device)),
         seed=_as_int(_get(p, ("seed",), TrainParams.seed)),
     )

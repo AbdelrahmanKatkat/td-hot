@@ -8,7 +8,8 @@ version = "0.1.0"
 description = "Reusable DeepForest tree-crown detector helpers for HOT fAIr model onboarding."
 readme = "README.md"
 requires-python = ">=3.12"
-# Inference core only: numpy/Pillow for pre/decode, rasterio/pyproj for georeferencing.
+# Inference core only (the CPU serving image installs just this plus onnxruntime, which the fAIr serving
+# base provides): numpy/Pillow for preprocessing, rasterio/pyproj for georeferencing. No torch.
 dependencies = [
     "numpy>=1.26",
     "Pillow>=10.0",
@@ -17,16 +18,26 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Export-only: builds the torchvision RetinaNet, loads NEON.pt and writes ONNX.
+# What the fAIr training image installs: fine-tuning, evaluation and ONNX export. Training runs on a GPU, but
+# the CUDA build of torch is chosen by the image (a CUDA wheel index), not by this metadata, so torch stays
+# a plain requirement here. `onnxscript` is not needed: the export uses the legacy exporter.
 train = [
     "onnx>=1.17",
-    "onnxscript>=0.1",
     "torch>=2.4",
     "torchvision>=0.19",
+]
+# Run an exported ONNX locally (`scripts/predict.py`). The fAIr serving base brings its own onnxruntime.
+infer = [
+    "onnxruntime>=1.18",
 ]
 test = [
     "onnxruntime>=1.18",
     "pytest>=8.0",
+]
+# Building and analysing datasets in this repository only (`research/analysis`): Hugging Face dataset loading.
+# fAIr-models does not use Hugging Face and must never install this extra.
+dataprep = [
+    "datasets>=5.1.0",
 ]
 
 [tool.hatch.build.targets.wheel]

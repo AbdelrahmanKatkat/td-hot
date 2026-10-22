@@ -12,9 +12,12 @@ so they stay tunable. The score floor inside the graph is 0, which is equivalent
 floor followed by the same filter outside, because top-k keeps the highest scores either way.
 """
 
+import logging
 from pathlib import Path
 
 from .params import IMAGE_MEAN, IMAGE_STD, TOPK_CANDIDATES, PostprocessParams
+
+log = logging.getLogger(__name__)
 
 OPSET = 17
 INPUT_NAME = "image"
@@ -112,7 +115,15 @@ def export_onnx_bytes(model, *, opset: int = OPSET) -> bytes:
         proto = onnx.load(path)
         onnx.save_model(proto, path, save_as_external_data=False)
         onnx.checker.check_model(str(path))
-        return path.read_bytes()
+        data = path.read_bytes()
+    log.info(
+        "exported ONNX (opset %d, level 2, inputs %s -> outputs %s): %.1f MB",
+        opset,
+        INPUT_NAME,
+        OUTPUT_NAMES,
+        len(data) / 1e6,
+    )
+    return data
 
 
 def main() -> None:

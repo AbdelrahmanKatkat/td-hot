@@ -1,6 +1,6 @@
 """`td-hot`: HOT fAIr DeepForest tree-crown detector helpers."""
 
-from .dataset import prepare_detection_dataset_from_geojson, spatial_split
+from .dataset import labels_for_chips, spatial_split
 from .decode import decode_detections, nms_xyxy
 from .params import (
     PostprocessParams,
@@ -26,6 +26,7 @@ __all__ = [
     "chip_scale",
     "decode_detections",
     "detections_to_feature_collection",
+    "labels_for_chips",
     "nms_xyxy",
     "parse_postprocess_params",
     "parse_preprocess_params",
@@ -33,7 +34,6 @@ __all__ = [
     "parse_train_params",
     "predict_chip",
     "predict_session",
-    "prepare_detection_dataset_from_geojson",
     "preprocess_chip",
     "preprocess_array",
     "spatial_split",

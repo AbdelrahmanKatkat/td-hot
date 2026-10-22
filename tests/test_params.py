@@ -46,21 +46,46 @@ def test_split_params():
         parse_split_params({"val_ratio": 0.0})
 
 
-def test_train_params_defaults_and_validation():
+def test_train_params_defaults_are_the_pack_recipe():
     cfg = parse_train_params({})
-    assert cfg.epochs >= 1 and cfg.batch_size >= 1
+    assert (cfg.learning_rate, cfg.weight_decay, cfg.max_grad_norm, cfg.scheduler) == (
+        1e-3,
+        1e-4,
+        1.0,
+        "cosine",
+    )
+    assert cfg.freeze_encoder is True and cfg.epochs >= 1 and cfg.batch_size >= 1
     with pytest.raises(ValueError):
         parse_train_params({"epochs": 0})
 
 
 def test_train_params_overrides_alias_and_bounds():
-    cfg = parse_train_params({"lr": "0.001", "freeze_backbone": "true", "epochs": 3, "seed": None})
-    assert cfg.learning_rate == 0.001 and cfg.freeze_backbone is True and cfg.epochs == 3 and cfg.seed == 42
+    cfg = parse_train_params(
+        {"lr": "0.01", "freeze_encoder": "false", "epochs": 3, "seed": None, "scheduler": "None"}
+    )
+    assert cfg.learning_rate == 0.01 and cfg.freeze_encoder is False and cfg.epochs == 3 and cfg.seed == 42
+    assert cfg.scheduler == "none"
+    assert (
+        parse_train_params({"freeze_backbone": False}).freeze_encoder is False
+    )  # earlier name still accepted
     for bad in (
         {"learning_rate": 0},
         {"sample_fraction": 1.5},
         {"early_stop_patience": 0},
-        {"freeze_backbone": "maybe"},
+        {"freeze_encoder": "maybe"},
+        {"scheduler": "step"},
+        {"max_grad_norm": -1},
     ):
         with pytest.raises(ValueError):
             parse_train_params(bad)
+
+
+def test_partial_unfreeze_params():
+    cfg = parse_train_params({"unfreeze_from": "Layer4", "encoder_lr_factor": "0.1"})
+    assert (cfg.freeze_encoder, cfg.unfreeze_from, cfg.encoder_lr_factor) == (True, "layer4", 0.1)
+    assert parse_train_params({}).unfreeze_from == "none" and parse_train_params({}).encoder_lr_factor == 1.0
+    for bad in ({"unfreeze_from": "layer9"}, {"encoder_lr_factor": 0}, {"encoder_lr_factor": 2}):
+        with pytest.raises(ValueError):
+            parse_train_params(bad)
+    with pytest.raises(ValueError, match="needs freeze_encoder=True"):
+        parse_train_params({"freeze_encoder": False, "unfreeze_from": "layer4"})

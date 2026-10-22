@@ -1,17 +1,15 @@
 """Dataset helpers for td-hot (numpy/rasterio/pyproj only; safe to import at serving time).
 
 - `spatial_split`: deterministic block split of OAM chips into train/val.
-- `prepare_detection_dataset_from_geojson`: crown polygons (GeoJSON) -> per-chip pixel boxes.
+- `labels_for_chips`: crown polygons or boxes (GeoJSON) -> per-chip pixel boxes, nothing copied.
 """
 
 import json
-import shutil
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from .params import SplitParams
 from .tiles import OAM_TILE_RE
 
 
@@ -155,65 +153,16 @@ def boxes_for_chip(
     ]
 
 
-def prepare_detection_dataset_from_geojson(
-    *,
-    chips_dir: str | Path,
-    labels_dir: str | Path,
-    out_dir: str | Path,
-    split_cfg: SplitParams,
-    class_id: int = 0,
-) -> dict[str, Any]:
-    """Split OAM chips spatially and write per-split chips plus pixel-space box labels (GeoTIFF chips).
+def labels_for_chips(
+    chips_dir: str | Path, labels_dir: str | Path, *, class_id: int = 0
+) -> dict[str, list[dict[str, float | int]]]:
+    """Pixel boxes of every chip in `chips_dir` from one GeoJSON of box or polygon labels. Nothing is copied.
 
-    Output layout:
-    - `<out_dir>/train/images/*.tif` and `<out_dir>/train/labels.json`
-    - `<out_dir>/val/images/*.tif` and `<out_dir>/val/labels.json`
-
-    `labels.json` maps chip filename -> list of `{x1, y1, x2, y2, class_id}` in chip pixels. Chips
-    with no crown get an empty list (negative examples). `out_dir` must not already hold files, so a
-    re-run with another seed cannot leave chips from the old split behind.
+    A pipeline step can call this on the chips and labels it was given, so no prepared folder has to be shared
+    between isolated steps. Chips without a label get an empty list (negative examples).
     """
-    chips_root = Path(chips_dir)
-    out_root = Path(out_dir)
-    if out_root.exists() and any(out_root.iterdir()):
-        raise FileExistsError(f"{out_root} is not empty; use a fresh output directory")
-
-    label_bounds, labels_crs = load_label_bounds(_find_labels_geojson(labels_dir))
-    chip_paths = list_chip_paths(chips_root)
-    if len(chip_paths) < 2:
-        raise ValueError("Need at least 2 chips for train/val split")
-
-    train_names, val_names = spatial_split(
-        [p.name for p in chip_paths],
-        split_cfg.val_ratio,
-        split_cfg.split_seed,
-        block_size=split_cfg.block_size,
-    )
-    if not train_names or not val_names:
-        raise ValueError("Spatial split left train or val empty; add chips or lower block_size/val_ratio")
-
-    total_boxes = 0
-    for split_name, names in (("train", train_names), ("val", val_names)):
-        img_dir = out_root / split_name / "images"
-        img_dir.mkdir(parents=True, exist_ok=True)
-        labels_map: dict[str, list[dict[str, float | int]]] = {}
-        for name in names:
-            shutil.copy2(chips_root / name, img_dir / name)
-            boxes = boxes_for_chip(
-                chips_root / name, label_bounds=label_bounds, labels_crs=labels_crs, class_id=class_id
-            )
-            labels_map[name] = boxes
-            total_boxes += len(boxes)
-        (out_root / split_name / "labels.json").write_text(json.dumps(labels_map), encoding="utf-8")
-
+    bounds, crs = load_label_bounds(_find_labels_geojson(labels_dir))
     return {
-        "strategy": "spatial",
-        "val_ratio": split_cfg.val_ratio,
-        "seed": split_cfg.split_seed,
-        "block_size": split_cfg.block_size,
-        "train_count": len(train_names),
-        "val_count": len(val_names),
-        "train_chip_names": train_names,
-        "val_chip_names": val_names,
-        "total_boxes": total_boxes,
+        p.name: boxes_for_chip(p, label_bounds=bounds, labels_crs=crs, class_id=class_id)
+        for p in list_chip_paths(chips_dir)
     }

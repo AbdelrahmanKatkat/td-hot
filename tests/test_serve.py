@@ -76,3 +76,26 @@ def test_polygon_in_epsg4326_passthrough():
     ring = xyxy_to_epsg4326_polygon(0, 0, 10, 10, from_origin(10.0, 50.0, 0.001, 0.001), "EPSG:4326")
     assert ring[0] == ring[-1] and ring[0] == [10.0, 50.0]
     np.testing.assert_allclose(ring[2], [10.01, 49.99])
+
+
+def test_predict_session_logs_one_summary_line_not_one_per_chip(write_chip, tmp_path, caplog):
+    import logging
+
+    for i in range(3):
+        write_chip(f"OAM-52428{i}-524288-20.tif")
+    with caplog.at_level(logging.INFO, logger="td_hot.serve"):
+        predict_session(FakeSession(plant=True), tmp_path, None)
+    lines = [r.getMessage() for r in caplog.records if r.name == "td_hot.serve"]
+    assert lines == ["predict_session: 3 chips, 3 detections in " + lines[0].rsplit(" in ", 1)[1]]
+
+
+def test_detect_chip_returns_chip_pixel_detections_and_meta(write_chip, tmp_path):
+    from td_hot.serve import detect_chip
+
+    path = write_chip(CHIP_NAME)
+    dets, meta = detect_chip(FakeSession(plant=True), path, None)
+    ratio = meta.resized_width / 256
+    assert len(dets) == 1 and meta.width == 256
+    assert (dets[0]["x1"], dets[0]["y1"], dets[0]["x2"], dets[0]["y2"]) == pytest.approx(
+        (100 / ratio, 100 / ratio, 200 / ratio, 200 / ratio)
+    )

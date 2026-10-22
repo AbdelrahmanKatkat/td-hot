@@ -143,16 +143,33 @@ All keys optional; `None`/missing -> default. Aliases are accepted, the canonica
 
 Constants, not parameters: `IMAGE_MEAN`, `IMAGE_STD`, `TOPK_CANDIDATES = 1000` (fixed in the graph), `DETECTIONS_PER_IMG = 300`, `MAX_SCALE = 8`. Defaults come from DeepForest 2.1.0 `conf/config.yaml` [V].
 
-### 6.2 Split / training
+### 6.2 Split / training (`td_hot.params.TrainParams`)
 
 | Key | Type | Default | Purpose |
 |---|---|---|---|
 | `val_ratio` | float | 0.2 | fraction of chips for validation (fAIr-required) |
 | `split_seed` | int | 42 | RNG seed (fAIr-required) |
 | `block_size` | int | 4 | spatial block edge in OAM tile units for the split |
-| `epochs`, `batch_size`, `learning_rate` (alias `lr`), `weight_decay`, `early_stop_patience`, `freeze_backbone`, `sample_fraction`, `device`, `seed` | | see `TrainParams` | | fine-tuning (`td_hot.train`) |
+| `epochs`, `batch_size` | int | 5, 2 | |
+| `learning_rate` (alias `lr`), `weight_decay` | float | 1e-3, 1e-4 | SGD with momentum 0.9 |
+| `scheduler` | `cosine` / `none` | `cosine` | cosine decay to 0 over all batches of the run, stepped per batch (not per epoch) |
+| `warmup_steps` | int | 0 | linear learning-rate ramp over the first batches |
+| `max_grad_norm` | float | 1.0 | gradient clipping (0 disables) |
+| `freeze_encoder` | bool | **true** | the ResNet encoder does not train; the FPN and heads do. BatchNorm is always frozen |
+| `unfreeze_from` | `none`, `layer4`..`layer1` | `none` | with a frozen encoder, still train the stages from this one on (needs `freeze_encoder=true`) |
+| `encoder_lr_factor` | float in (0, 1] | 1.0 | learning-rate multiplier for the encoder weights that do train |
+| `early_stop_patience` | int | 5 | epochs without a better loss before stopping |
+| `sample_fraction` | float | 1.0 | one fixed random subset of the training tiles for the whole run |
+| `epoch_fraction` | float | 1.0 | each epoch trains on a fresh random fraction of the tiles; with highly correlated neighbouring tiles a short epoch gives more validation points per pass of data |
+| `device`, `seed` | | `auto`, 42 | `cuda` if visible, RNG |
 
-DeepForest's own training defaults: `lr 0.001`, `epochs 1`, `batch_size 1`, `HorizontalFlip(p=0.5)`, `num_classes=1` [V config]. BatchNorm statistics stay frozen during fine-tuning. Training chips are scaled with the same rule as serving.
+The defaults are the recipe of the fAIr `deepforest_tree` pack (SGD, cosine, clipping, flip augmentation, frozen encoder). DeepForest's own defaults for comparison: `lr 0.001`, `epochs 1`, `batch_size 1`, `HorizontalFlip(p=0.5)`, `num_classes=1` [V config]. Training chips are scaled with the same rule as serving.
+
+**Why the encoder is frozen by default [M]:** on a few hundred Freetown tiles, training every weight kept only 32% to 66% of the base model's F1 on its own NEON domain, a frozen encoder kept 96% (and reached target F1 0.353 against 0.480 for the unfrozen run). `unfreeze_from` / `encoder_lr_factor` sit between the two; their measured effect is in `research/datasets.md` section 6.2.
+
+### 6.3 Evaluation entry points (`td_hot.evaluate`)
+
+`score_chips` (torch model) and `score_session` (ONNX session, the deployed path, no torch) give precision / recall / F1 at one or several IoU thresholds from one pass per chip; `sweep_confidence` picks the confidence threshold of a fine-tuned model; `score_image` scores one image at an explicit scale (the forgetting check on the base model's own domain). Labels are a `labels.json` path or a mapping (`dataset.labels_for_chips`), and `names` / `max_chips` select chips.
 
 ## 7. Windowing (upstream, not used here) and spatial split
 
