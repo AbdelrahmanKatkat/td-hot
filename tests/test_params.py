@@ -31,6 +31,14 @@ def test_invalid_postprocess_values(bad):
         parse_postprocess_params(bad)
 
 
+def test_max_input_px_default_override_and_bounds():
+    assert parse_preprocess_params(None).max_input_px == 1024
+    assert parse_preprocess_params({"max_input_px": "1333"}).max_input_px == 1333
+    for bad in ({"max_input_px": 32}, {"max_input_px": 100000}):
+        with pytest.raises(ValueError):
+            parse_preprocess_params(bad)
+
+
 def test_preprocess_params_override_and_bounds():
     assert parse_preprocess_params({"model_gsd_m": "0.1"}).model_gsd_m == 0.1
     for bad in ({"model_gsd_m": 0}, {"model_gsd_m": 5}, {"model_gsd_m": True}):

@@ -33,11 +33,23 @@ def tile_gsd_m(name: str, width_px: int) -> float:
     return WEB_MERCATOR_WIDTH_M * math.cos(lat) / 2**z / width_px
 
 
-def chip_scale(name: str, width_px: int, model_gsd_m: float) -> float:
+def chip_scale(
+    name: str,
+    width_px: int,
+    model_gsd_m: float,
+    *,
+    height_px: int | None = None,
+    max_input_px: int | None = None,
+) -> float:
     """Factor that makes one model pixel cover `model_gsd_m` metres of ground.
+
+    A zoom that needs more than `MAX_SCALE` raises. With `max_input_px` the scale is then capped so the longest
+    side of the scaled chip stays within it (a coarse zoom is upscaled less, trading resolution for memory).
 
     >>> round(chip_scale("OAM-524288-524288-20.tif", 256, 0.05), 2)
     2.99
+    >>> chip_scale("OAM-193343-110117-18.tif", 256, 0.05, max_input_px=1024)
+    4.0
     """
     scale = tile_gsd_m(name, width_px) / model_gsd_m
     if scale > MAX_SCALE:
@@ -45,4 +57,6 @@ def chip_scale(name: str, width_px: int, model_gsd_m: float) -> float:
             f"{name}: scale {scale:.1f} exceeds {MAX_SCALE}; the zoom is too coarse for this model "
             f"(chip pixel is {tile_gsd_m(name, width_px):.2f} m, model wants {model_gsd_m} m)"
         )
+    if max_input_px is not None:
+        scale = min(scale, max_input_px / max(width_px, height_px or width_px))
     return scale

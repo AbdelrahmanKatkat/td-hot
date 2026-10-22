@@ -48,6 +48,14 @@ def test_preprocess_chip_takes_the_scale_from_the_oam_zoom(write_chip):
     assert str(meta.crs) == "EPSG:3857" and meta.transform.a == 1.0
 
 
+def test_a_coarse_zoom_is_capped_at_max_input_px(write_chip):
+    path = write_chip(name="OAM-193343-110117-18.tif")  # zoom 18 at latitude 27.6: uncapped x10.6 = 2,700 px
+    capped, meta = preprocess_chip(path)
+    assert capped.shape == (3, 1024, 1024) and (meta.resized_width, meta.resized_height) == (1024, 1024)
+    loose, _ = preprocess_chip(path, PreprocessParams(max_input_px=2048))
+    assert loose.shape == (3, 2048, 2048)
+
+
 def test_model_gsd_changes_the_scale(write_chip):
     path = write_chip(name=CHIP_NAME)
     coarse, _ = preprocess_chip(path, PreprocessParams(model_gsd_m=0.10))

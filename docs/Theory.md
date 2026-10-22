@@ -56,7 +56,7 @@ torchvision's `GeneralizedRCNNTransform(min_size=800, max_size=1333, ImageNet me
 In this library:
 1. **Normalisation** `(x - mean) / std`, mean `(0.485, 0.456, 0.406)`, std `(0.229, 0.224, 0.225)`: inside the ONNX graph.
 2. **Padding** to a multiple of 32: inside the ONNX graph.
-3. **Resize**: replaced by `preprocess.py`, with the scale taken from the chip's zoom (section 3) instead of "short side = 800". torchvision's resize is disabled in `build_retinanet`, so training and serving see identical pixels. The 1333 cap is not implemented: a 256 px chip reaches it at a scale of 5.2 (zoom 19 is already at about 5.9 at Freetown), and `MAX_SCALE = 16` only rejects zooms coarser than 18. At zoom 18 a 256 px chip becomes about 2700 to 3000 px square, which is far outside what was trained or measured and costs several times the memory of a zoom 20 chip.
+3. **Resize**: replaced by `preprocess.py`, with the scale taken from the chip's zoom (section 3) instead of "short side = 800". torchvision's resize is disabled in `build_retinanet`, so training and serving see identical pixels. torchvision's `max_size = 1333` is replaced by `max_input_px` (default 1024, section 6.1): the longest side of the scaled chip never exceeds it, so a coarse zoom is upscaled less instead of growing without bound. A 256 px chip at zoom 18 (latitude 28) would otherwise become about 2,700 px and need about 3.8 GiB for one CPU forward pass.
 
 ## 3. Preprocessing: scale from the zoom level
 
@@ -78,12 +78,13 @@ One image, in the model's training domain, with resolution emulated by area-down
 ```
 chip_gsd_m = 40075016.68558 * cos(lat_of_tile_centre) / 2^z / chip_width_px     # true ground size of a chip pixel
 scale      = chip_gsd_m / model_gsd_m                                              # model_gsd_m = 0.05
+scale      = min(scale, max_input_px / longest chip side)                         # max_input_px = 1024
 input size = round(chip size * scale)                                              # one bilinear resize, in float
 ```
 
 `z`, and `y` (which gives the latitude) come from the chip name `OAM-<x>-<y>-<z>.<ext>` (`td_hot.tiles`). Nothing is read from the file, so PNG/JPEG chips work the same as GeoTIFFs. Examples for a 256 px chip: zoom 20 at the equator is 14.9 cm/px -> scale 2.99; the same zoom at 48 deg latitude is 10 cm/px -> scale 2.0. Ground resolution depends on `cos(latitude)`, so the latitude matters as much as the zoom; XYZ and TMS row numbering give the same value because `cos` is symmetric about the equator [V: formula, unit-tested].
 
-`PreprocessParams.model_gsd_m` (default 0.05, range [0.005, 1]) is the one knob. **Training and serving must use the same value**; `train_retinanet` takes the same `PreprocessParams` and scales chips and boxes with it [P]. Scales above 16 (a 256 px chip coarser than 80 cm/px) raise `ValueError`; behaviour between 15.6 and 40 cm is not measured [?].
+`PreprocessParams.model_gsd_m` (default 0.05, range [0.005, 1]) sets the scale and `max_input_px` (default 1024, range [64, 8192]) caps it: zoom 20 is untouched (about 760 px), zoom 19 goes from 5.9 to 4.0 at Freetown, zoom 18 from 10.6 to 4.0. **Training and serving must use the same value**; `train_retinanet` takes the same `PreprocessParams` and scales chips and boxes with it [P]. Scales above 16 (a 256 px chip coarser than 80 cm/px) raise `ValueError`; behaviour between 15.6 and 40 cm is not measured [?].
 
 ### 3.3 Is the zoom always known? [V: checked, with limits]
 
@@ -138,6 +139,7 @@ All keys optional; `None`/missing -> default. Aliases are accepted, the canonica
 | Key | Type | Default | Safe range | Stage | Purpose |
 |---|---|---|---|---|---|
 | `model_gsd_m` | float | 0.05 | [0.005, 1] | preprocess | metres of ground per model pixel; sets the scale (section 3). Must match training |
+| `max_input_px` | int | 1024 | [64, 8192] | preprocess | cap on the longest side of the scaled chip (section 3); bounds memory at coarse zooms. Must match training |
 | `confidence_threshold` (alias `score_thresh`) | float | 0.1 | [0, 1] | decode | minimum sigmoid score; STAC default 0.38; the 2019 paper filtered at 0.2 |
 | `nms_threshold` (alias `nms_thresh`) | float | 0.05 | [0, 1] | decode | NMS IoU over all candidates of the chip (DeepForest `nms_thresh`; no rationale in its `config.yaml`) |
 

@@ -77,7 +77,14 @@ class DetectionDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         path = self.paths[idx]
         rgb, _, _ = read_rgb_chip(path)
-        scaled, meta = preprocess_array(rgb, chip_scale(path.name, rgb.shape[1], self.pre.model_gsd_m))
+        scale = chip_scale(
+            path.name,
+            rgb.shape[1],
+            self.pre.model_gsd_m,
+            height_px=rgb.shape[0],
+            max_input_px=self.pre.max_input_px,
+        )
+        scaled, meta = preprocess_array(rgb, scale)
         boxes = np.asarray(
             [[b["x1"], b["y1"], b["x2"], b["y2"]] for b in self.labels.get(path.name, [])], dtype=np.float32
         ).reshape(-1, 4) * np.asarray([meta.scale_x, meta.scale_y] * 2, dtype=np.float32)

@@ -52,6 +52,19 @@ def test_chip_scale_is_gsd_over_model_gsd():
     assert chip_scale("OAM-524288-524288-20.tif", 256, 0.10) == pytest.approx(scale / 2)
 
 
+def test_max_input_px_caps_the_longest_side_of_the_scaled_chip():
+    zoom18 = "OAM-193343-110117-18.tif"  # latitude 27.6: 0.53 m/px, uncapped scale 10.6
+    assert chip_scale(zoom18, 256, 0.05) == pytest.approx(10.58, abs=0.02)
+    assert chip_scale(zoom18, 256, 0.05, max_input_px=1024) == pytest.approx(4.0)
+    assert chip_scale(zoom18, 256, 0.05, height_px=512, max_input_px=1024) == pytest.approx(
+        2.0
+    )  # longer side
+    zoom20 = "OAM-524288-524288-20.tif"  # about 3x: 765 px, below the cap, so unchanged
+    assert chip_scale(zoom20, 256, 0.05, max_input_px=1024) == chip_scale(zoom20, 256, 0.05)
+
+
 def test_chip_scale_rejects_zooms_that_are_too_coarse():
     with pytest.raises(ValueError, match="too coarse"):
-        chip_scale("OAM-262144-262144-19.tif", 256, 0.01)  # 0.3 m/px chip, 1 cm model pixel -> x30
+        chip_scale(
+            "OAM-262144-262144-19.tif", 256, 0.01, max_input_px=1024
+        )  # x30 is refused, not just capped

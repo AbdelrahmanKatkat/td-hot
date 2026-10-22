@@ -79,5 +79,11 @@ def preprocess_chip(
     """Read a chip named `OAM-<x>-<y>-<z>.<ext>`, derive the scale from its zoom, and preprocess it."""
     cfg = cfg or PreprocessParams()
     rgb, transform, crs = read_rgb_chip(image_path)
-    scale = chip_scale(Path(image_path).name, rgb.shape[1], cfg.model_gsd_m)
+    scale = chip_scale(
+        Path(image_path).name,
+        rgb.shape[1],
+        cfg.model_gsd_m,
+        height_px=rgb.shape[0],
+        max_input_px=cfg.max_input_px,
+    )
     return preprocess_array(rgb, scale, transform=transform, crs=crs)

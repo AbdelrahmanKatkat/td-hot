@@ -27,6 +27,10 @@ MODEL_GSD_M = 0.05
 # that is far too coarse for this model). Zoom 18 needs 10.6 (latitude 28) to 11.9 (equator), so it is
 # accepted, but that scale is far outside what the model was trained or measured on (about 3x at zoom 20).
 MAX_SCALE = 16.0
+# The longest side of a scaled chip never exceeds this many pixels (`PreprocessParams.max_input_px`). Without it
+# the input size follows the zoom: a 256 px chip at zoom 18 (latitude 28) becomes 2,700 px and a CPU pod with a
+# few GiB is OOM-killed. 1024 px leaves zoom 20 untouched (about 760 px) and bounds the memory of coarser zooms.
+MAX_INPUT_PX = 1024
 
 # ResNet-50 stages of the encoder, shallow to deep; `unfreeze_from` picks the first one that trains.
 ENCODER_STAGES = ("layer1", "layer2", "layer3", "layer4")
@@ -44,6 +48,7 @@ class PreprocessParams:
     """How a chip is scaled before the model. Training and serving must use the same value."""
 
     model_gsd_m: float = MODEL_GSD_M  # ground size of one model-input pixel, metres
+    max_input_px: int = MAX_INPUT_PX  # longest side of the scaled chip; a coarser zoom is upscaled less
 
 
 @dataclass(frozen=True)
@@ -147,12 +152,18 @@ def parse_split_params(hyperparameters: Mapping[str, Any] | None) -> SplitParams
 
 
 def parse_preprocess_params(params: Mapping[str, Any] | None) -> PreprocessParams:
-    """`model_gsd_m`: metres of ground per model-input pixel (default 0.05, the NEON training scale)."""
+    """`model_gsd_m`: metres per model-input pixel (default 0.05, the NEON training scale).
+
+    `max_input_px`: cap on the longest side of the scaled chip (default 1024), which bounds memory at coarse zooms.
+    """
     p = params or {}
     model_gsd_m = _as_float(_get(p, ("model_gsd_m",), PreprocessParams.model_gsd_m))
     if not 0.005 <= model_gsd_m <= 1.0:
         raise ValueError(f"model_gsd_m must be in [0.005, 1.0] metres, got {model_gsd_m}")
-    return PreprocessParams(model_gsd_m=model_gsd_m)
+    max_input_px = _as_int(_get(p, ("max_input_px",), PreprocessParams.max_input_px))
+    if not 64 <= max_input_px <= 8192:
+        raise ValueError(f"max_input_px must be in [64, 8192] pixels, got {max_input_px}")
+    return PreprocessParams(model_gsd_m=model_gsd_m, max_input_px=max_input_px)
 
 
 def parse_postprocess_params(params: Mapping[str, Any] | None) -> PostprocessParams:

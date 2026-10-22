@@ -23,8 +23,9 @@ Entry point: `td_hot.predict_session(session, input_images, params)` returns a G
 
 **Chip names must be `OAM-<x>-<y>-<z>.<ext>`.** The zoom and tile row give the true ground resolution, so the
 scale is right even for PNG/JPEG chips with no georeferencing (their polygons stay in pixel coordinates). A
-zoom that would need an upscale above 16x is rejected (zoom 18 needs about 11x: accepted, but far from the 3x of zoom 20, which
-is the level to recommend, at about 10-15 cm/px).
+zoom that would need an upscale above 16x is rejected. The scaled chip is also capped at `max_input_px` (default 1024) on its longest
+side, so zoom 18 is upscaled 4x instead of 11x and its memory stays bounded; zoom 20 (about 10-15 cm/px, about 3x) is the level to
+recommend and is not affected.
 
 ## Install, extras and who installs what
 
