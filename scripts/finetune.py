@@ -94,7 +94,7 @@ def _run_training(args: argparse.Namespace) -> TrainResult:
         val_images_dir=val_images, val_labels=val_labels,
         cfg=_train_params(args),
         pre=parse_preprocess_params({"model_gsd_m": args.model_gsd_m}),
-        checkpoint_path=args.weights, log_every=args.log_every,
+        checkpoint=args.weights, log_every=args.log_every,
         epoch_checkpoint_dir=args.out / "epochs",
     )  # fmt: skip
 

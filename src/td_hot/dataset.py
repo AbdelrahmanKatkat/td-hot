@@ -2,11 +2,12 @@
 
 - `list_chip_paths`, `spatial_split`: find the chips and split them into train/val.
 - `load_labels`: a `labels.json` path or mapping -> the chip name -> boxes mapping.
-- `build_chip_labels`: crown polygons or boxes (GeoJSON) -> per-chip pixel boxes, nothing copied.
+- `build_chip_labels`: crown polygons, boxes or tree points (GeoJSON) -> per-chip pixel boxes, nothing copied.
 - `scale_chip_and_boxes`, `flip_chip_and_boxes`: the per-chip steps of training, applied to an image and its boxes.
 """
 
 import json
+import math
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,9 @@ from .preprocess import preprocess_rgb
 from .tiles import OAM_TILE_RE, chip_scale
 
 CHIP_PATTERNS = ("*.tif", "*.tiff", "*.png", "*.jpg", "*.jpeg")
+LABEL_SUFFIXES = (".geojson", ".json")
+DEFAULT_CROWN_M = 5.0  # side of the square crown of a tree point without a usable `diameter_crown`
+METRES_PER_DEGREE = 111_320  # spherical approximation, within 1% of WGS84 latitude degrees
 
 
 def list_chip_paths(root: str | Path) -> list[Path]:
@@ -58,13 +62,14 @@ def spatial_split(
     return sorted(train), sorted(val)
 
 
-def _find_labels_geojson(labels_dir: str | Path) -> Path:
-    root = Path(labels_dir)
-    if root.is_file() and root.suffix.lower() == ".geojson":
+def _find_labels_geojson(labels: str | Path) -> Path:
+    """The labels file: the path itself if it is a `.geojson` / `.json` file, else the one such file under a folder."""
+    root = Path(labels)
+    if root.is_file() and root.suffix.lower() in LABEL_SUFFIXES:
         return root
-    matches = sorted(root.glob("*.geojson"))
+    matches = sorted(root.rglob("*.geojson")) or sorted(root.rglob("*.json"))
     if len(matches) != 1:
-        raise ValueError(f"Expected exactly one .geojson in {root}, found {len(matches)}")
+        raise ValueError(f"Expected exactly one .geojson (or .json) in {root}, found {len(matches)}")
     return matches[0]
 
 
@@ -108,8 +113,32 @@ def load_labels(
     return labels
 
 
+def _point_crown_bounds(
+    lon: float, lat: float, properties: dict[str, Any]
+) -> tuple[float, float, float, float]:
+    """The square crown around a tree point as `(minx, miny, maxx, maxy)` in degrees, as OSM maps trees as points.
+
+    The side is the `diameter_crown` tag in metres (read from `tags` when OSM nests them), or `DEFAULT_CROWN_M` when it
+    is missing or not a positive number, for example free text such as "3 m".
+    """
+    tags = properties.get("tags") or properties
+    try:
+        side_m = float(tags.get("diameter_crown") or DEFAULT_CROWN_M)
+    except (TypeError, ValueError):
+        side_m = DEFAULT_CROWN_M
+    if not (math.isfinite(side_m) and side_m > 0):
+        side_m = DEFAULT_CROWN_M
+    half_lat = side_m / 2 / METRES_PER_DEGREE
+    half_lon = half_lat / math.cos(math.radians(lat))
+    return lon - half_lon, lat - half_lat, lon + half_lon, lat + half_lat
+
+
 def read_label_boxes(labels_geojson: str | Path) -> tuple[np.ndarray, str]:
-    """Crown bounding boxes `(N, 4)` as `(minx, miny, maxx, maxy)` in the file CRS, plus that CRS."""
+    """Crown bounding boxes `(N, 4)` as `(minx, miny, maxx, maxy)` in the file CRS, plus that CRS.
+
+    A polygon or box gives its bounds. A tree point gives a square crown (`_point_crown_bounds`), which takes the
+    point as longitude and latitude in degrees.
+    """
     collection = json.loads(Path(labels_geojson).read_text(encoding="utf-8"))
     if not isinstance(collection, dict) or collection.get("type") != "FeatureCollection":
         raise ValueError("labels file must be a GeoJSON FeatureCollection")
@@ -119,6 +148,10 @@ def read_label_boxes(labels_geojson: str | Path) -> tuple[np.ndarray, str]:
     bounds: list[tuple[float, float, float, float]] = []
     for feature in features:
         geom = feature.get("geometry") if isinstance(feature, dict) else None
+        if isinstance(geom, dict) and geom.get("type") == "Point":
+            lon, lat = geom["coordinates"][:2]
+            bounds.append(_point_crown_bounds(lon, lat, feature.get("properties") or {}))
+            continue
         coords = _iter_xy_coords(geom.get("coordinates")) if isinstance(geom, dict) else []
         if coords:
             xs, ys = zip(*coords)
@@ -145,8 +178,12 @@ def chip_boxes(
     label_bounds: np.ndarray,
     labels_crs: Any,
     class_id: int = 0,
+    min_box_px: float = 0.0,
 ) -> list[dict[str, float | int]]:
-    """Label bounds -> XYXY boxes in chip pixels, clipped to the chip; boxes off the chip are dropped."""
+    """Label bounds -> XYXY boxes in chip pixels, clipped to the chip.
+
+    Boxes off the chip are dropped, and so are boxes thinner than `min_box_px` after clipping.
+    """
     import rasterio
 
     with rasterio.open(chip_path) as src:
@@ -165,7 +202,7 @@ def chip_boxes(
     rows = inv.d * corner_x + inv.e * corner_y + inv.f
     x1, x2 = np.clip(cols.min(axis=1), 0, width), np.clip(cols.max(axis=1), 0, width)
     y1, y2 = np.clip(rows.min(axis=1), 0, height), np.clip(rows.max(axis=1), 0, height)
-    keep = (x2 > x1) & (y2 > y1)
+    keep = (x2 > x1) & (y2 > y1) & (x2 - x1 >= min_box_px) & (y2 - y1 >= min_box_px)
     return [
         {
             "x1": float(left),
@@ -179,16 +216,19 @@ def chip_boxes(
 
 
 def build_chip_labels(
-    chips_dir: str | Path, labels_dir: str | Path, *, class_id: int = 0
+    chips_dir: str | Path, labels: str | Path, *, class_id: int = 0, min_box_px: float = 0.0
 ) -> dict[str, list[dict[str, float | int]]]:
-    """Pixel boxes of every chip in `chips_dir` from one GeoJSON of box or polygon labels. Nothing is copied.
+    """Pixel boxes of every chip in `chips_dir` from one GeoJSON of polygon, box or tree-point labels.
 
-    A pipeline step can call this on the chips and labels it was given, so no prepared folder has to be shared
-    between isolated steps. Chips without a label get an empty list (negative examples).
+    `labels` is the `.geojson` / `.json` file, or a folder holding exactly one. Nothing is copied, so a pipeline step
+    can call this on the chips and labels it was given, with no prepared folder shared between isolated steps.
+    Chips without a label get an empty list (negative examples); boxes thinner than `min_box_px` are dropped.
     """
-    bounds, crs = read_label_boxes(_find_labels_geojson(labels_dir))
+    bounds, crs = read_label_boxes(_find_labels_geojson(labels))
     return {
-        path.name: chip_boxes(path, label_bounds=bounds, labels_crs=crs, class_id=class_id)
+        path.name: chip_boxes(
+            path, label_bounds=bounds, labels_crs=crs, class_id=class_id, min_box_px=min_box_px
+        )
         for path in list_chip_paths(chips_dir)
     }
 

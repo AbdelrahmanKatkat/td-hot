@@ -171,7 +171,7 @@ The defaults are the recipe of the fAIr `deepforest_tree` pack (SGD, cosine, cli
 
 ### 6.3 Evaluation entry points (`td_hot.evaluate`)
 
-`score_dataset` (torch model) and `score_session` (ONNX session, the deployed path, no torch) give precision / recall / F1 at one or several IoU thresholds from one pass per chip; `sweep_confidence` picks the confidence threshold of a fine-tuned model; `score_chip` scores one image at an explicit scale (the forgetting check on the base model's own domain). Labels are a `labels.json` path or a mapping (`dataset.build_chip_labels`), and `names` / `max_chips` select chips.
+`score_dataset` (torch model) and `score_session` (ONNX session, the deployed path, no torch) give precision / recall / F1 at one or several IoU thresholds from one pass per chip; `sweep_confidence` picks the confidence threshold of a fine-tuned model; `score_chip` scores one image at an explicit scale (the forgetting check on the base model's own domain). Labels are a `labels.json` path or a mapping (`dataset.build_chip_labels`, from polygons, boxes or OSM tree points), and `names` / `max_chips` select chips.
 
 ## 7. Windowing (upstream, not used here) and spatial split
 

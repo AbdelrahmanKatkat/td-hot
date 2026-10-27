@@ -13,7 +13,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 import numpy as np
 import torch
@@ -49,6 +49,10 @@ def _resolve_device(requested: str) -> str:
     if raw in {"auto", "cuda", "gpu"}:
         return "cuda"
     return f"cuda:{raw}" if raw.isdigit() else raw
+
+
+def _checkpoint_label(checkpoint: Any) -> str:
+    return str(checkpoint) if checkpoint is None or isinstance(checkpoint, (str, Path)) else "<stream>"
 
 
 def _ensure_visible_progress() -> None:
@@ -216,7 +220,7 @@ def train(
     val_labels: str | Path | Mapping[str, list[dict[str, Any]]] | None,
     cfg: TrainParams,
     pre: PreprocessParams | None = None,
-    checkpoint_path: str | Path | None = None,
+    checkpoint: str | Path | BinaryIO | None = None,
     log_every: int = 0,
     on_epoch_end: EpochCallback | None = None,
     max_val_chips: int | None = None,
@@ -226,8 +230,8 @@ def train(
 ) -> TrainResult:
     """Fine-tune the one-class RetinaNet on chip-pixel boxes; keep the best epoch.
 
-    `checkpoint_path` is the DeepForest `NEON.pt` state dict (loaded strict). Without it the model
-    starts from random weights. `pre.model_gsd_m` must be the value used at serving time. Export the
+    `checkpoint` is the DeepForest `NEON.pt` state dict, as a path or an open binary stream (loaded strict). Without
+    it the model starts from random weights. `pre.model_gsd_m` must be the value used at serving time. Export the
     result with `td_hot.export.export_onnx_bytes`.
 
     Progress goes to the `td_hot.train` logger at INFO (and is made visible if the host configured nothing):
@@ -268,7 +272,7 @@ def train(
             collate_fn=_collate,
         )
 
-    model = build_retinanet(checkpoint_path).to(device)
+    model = build_retinanet(checkpoint).to(device)
     _freeze(model, freeze_encoder=cfg.freeze_encoder, unfreeze_from=cfg.unfreeze_from)
     trainable = [param for param in model.parameters() if param.requires_grad]
     optimizer = torch.optim.SGD(
@@ -287,7 +291,7 @@ def train(
         cfg.max_grad_norm, cfg.freeze_encoder,
         cfg.unfreeze_from, cfg.encoder_lr_factor,
         sum(param.numel() for param in model.parameters()) / 1e6, sum(param.numel() for param in trainable) / 1e6,
-        pre.model_gsd_m, cfg.seed, checkpoint_path,
+        pre.model_gsd_m, cfg.seed, _checkpoint_label(checkpoint),
     )  # fmt: skip
 
     history: dict[str, list[float]] = {"train_loss": [], "val_loss": []}

@@ -14,6 +14,7 @@ floor followed by the same filter outside, because top-k keeps the highest score
 
 import logging
 from pathlib import Path
+from typing import BinaryIO
 
 from .params import IMAGE_MEAN, IMAGE_STD, TOPK_CANDIDATES, PostprocessParams
 
@@ -25,8 +26,10 @@ INPUT_NAME = "image"
 OUTPUT_NAMES = ("boxes", "scores", "labels")
 
 
-def build_retinanet(weights_path: str | Path | None = None):
+def build_retinanet(weights: str | Path | BinaryIO | None = None):
     """torchvision RetinaNet-ResNet50-FPN with 1 class; optionally load a DeepForest state dict.
+
+    `weights` is the state dict as a path or as an open binary stream (for example `io.BytesIO(checkpoint_bytes)`).
 
     The checkpoint stores weights only. Normalisation, anchors and thresholds are set here, so every
     generation of the model (base, fine-tuned, re-fine-tuned) is rebuilt with the same constants.
@@ -48,8 +51,8 @@ def build_retinanet(weights_path: str | Path | None = None):
         image_std=list(IMAGE_STD),
     )
     model.transform.resize = lambda image, target=None: (image, target)
-    if weights_path is not None:
-        state = torch.load(weights_path, map_location="cpu", weights_only=True)
+    if weights is not None:
+        state = torch.load(weights, map_location="cpu", weights_only=True)
         model.load_state_dict(state, strict=True)
     return model.eval()
 

@@ -89,7 +89,9 @@ loads torch.
 
 ## From a pipeline step (what a fAIr-models pack calls)
 
-A step trains straight from the original chips and GeoJSON: no prepared folder is copied or shared between steps.
+A step trains straight from the original chips and GeoJSON: no prepared folder is copied or shared between steps. The labels can be
+crown polygons, boxes or OSM tree points (a point becomes a square crown of its `diameter_crown` metres, 5 m without one), in a `.geojson` or
+`.json` file or in a folder holding exactly one. `checkpoint` is a path or an open binary stream, for example `io.BytesIO(weights_bytes)`.
 
 ```python
 from td_hot import parse_split_params, parse_preprocess_params, parse_postprocess_params, spatial_split
@@ -100,13 +102,13 @@ from td_hot.export import export_onnx_bytes
 from td_hot.evaluate import score_session                 # no torch: scores the exported ONNX
 
 split = parse_split_params(hyperparameters)               # val_ratio, split_seed, block_size
-labels = build_chip_labels(chips_dir, labels_geojson_dir)  # chip name -> pixel boxes
+labels = build_chip_labels(chips_dir, labels_geojson, min_box_px=2.0)  # chip name -> pixel boxes
 train_names, val_names = spatial_split(sorted(labels), split.val_ratio, split.split_seed, block_size=split.block_size)
 result = train(
     train_images_dir=chips_dir, train_labels=labels, train_names=train_names,
     val_images_dir=chips_dir, val_labels=labels, val_names=val_names,
     cfg=parse_train_params(hyperparameters), pre=parse_preprocess_params(hyperparameters),
-    checkpoint_path=base_weights, on_epoch_end=lambda epoch, train_loss, val_loss: ...)  # -> MLflow
+    checkpoint=base_weights, on_epoch_end=lambda epoch, train_loss, val_loss: ...)  # -> MLflow
 onnx_bytes = export_onnx_bytes(result.model)
 metrics = score_session(onnx_session, images_dir=chips_dir, labels=labels, names=val_names)[0.5]
 ```
