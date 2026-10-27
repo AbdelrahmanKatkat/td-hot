@@ -1,16 +1,30 @@
-"""Dataset helpers for td-hot (numpy/rasterio/pyproj only; safe to import at serving time).
+"""Dataset helpers for td-hot (numpy/rasterio/pyproj/Pillow only, no torch; safe to import at serving time).
 
-- `spatial_split`: deterministic block split of OAM chips into train/val.
-- `labels_for_chips`: crown polygons or boxes (GeoJSON) -> per-chip pixel boxes, nothing copied.
+- `list_chip_paths`, `spatial_split`: find the chips and split them into train/val.
+- `load_labels`: a `labels.json` path or mapping -> the chip name -> boxes mapping.
+- `build_chip_labels`: crown polygons or boxes (GeoJSON) -> per-chip pixel boxes, nothing copied.
+- `scale_chip_and_boxes`, `flip_chip_and_boxes`: the per-chip steps of training, applied to an image and its boxes.
 """
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from .tiles import OAM_TILE_RE
+from .params import PreprocessParams
+from .preprocess import preprocess_rgb
+from .tiles import OAM_TILE_RE, chip_scale
+
+CHIP_PATTERNS = ("*.tif", "*.tiff", "*.png", "*.jpg", "*.jpeg")
+
+
+def list_chip_paths(root: str | Path) -> list[Path]:
+    """RGB chips in a folder. Training and evaluation read any of them (the scale comes from the OAM
+    name), but turning GeoJSON labels into pixel boxes needs georeferenced GeoTIFFs."""
+    folder = Path(root)
+    return sorted(path for pattern in CHIP_PATTERNS for path in folder.glob(pattern) if path.is_file())
 
 
 def spatial_split(
@@ -24,10 +38,12 @@ def spatial_split(
     """
     blocks_map: dict[tuple[int, int], list[str]] = {}
     for name in chip_names:
-        m = OAM_TILE_RE.match(name)
-        if m is None:
+        match = OAM_TILE_RE.match(name)
+        if match is None:
             raise ValueError(f"chip name {name!r} does not match OAM-<x>-<y>-<z>.<ext>")
-        blocks_map.setdefault((int(m.group(1)) // block_size, int(m.group(2)) // block_size), []).append(name)
+        blocks_map.setdefault(
+            (int(match.group(1)) // block_size, int(match.group(2)) // block_size), []
+        ).append(name)
 
     rng = np.random.default_rng(seed)
     blocks = sorted(blocks_map)
@@ -40,16 +56,6 @@ def spatial_split(
     for block in blocks:
         (val if len(val) < n_val_target else train).extend(blocks_map[block])
     return sorted(train), sorted(val)
-
-
-CHIP_PATTERNS = ("*.tif", "*.tiff", "*.png", "*.jpg", "*.jpeg")
-
-
-def list_chip_paths(root: str | Path) -> list[Path]:
-    """RGB chips in a folder. Training and evaluation read any of them (the scale comes from the OAM
-    name), but turning GeoJSON labels into pixel boxes needs georeferenced GeoTIFFs."""
-    folder = Path(root)
-    return sorted(p for pattern in CHIP_PATTERNS for p in folder.glob(pattern) if p.is_file())
 
 
 def _find_labels_geojson(labels_dir: str | Path) -> Path:
@@ -74,37 +80,50 @@ def _parse_geojson_crs(feature_collection: dict[str, Any]) -> str:
 
 def _iter_xy_coords(node: Any) -> list[tuple[float, float]]:
     """All `(x, y)` pairs in a GeoJSON `coordinates` structure (any nesting, extra dims ignored)."""
-    out: list[tuple[float, float]] = []
+    pairs: list[tuple[float, float]] = []
 
-    def _walk(n: Any) -> None:
-        if not isinstance(n, (list, tuple)):
+    def _walk(item: Any) -> None:
+        if not isinstance(item, (list, tuple)):
             return
-        if len(n) >= 2 and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in n):
-            out.append((float(n[0]), float(n[1])))
+        if len(item) >= 2 and all(
+            isinstance(value, (int, float)) and not isinstance(value, bool) for value in item
+        ):
+            pairs.append((float(item[0]), float(item[1])))
             return
-        for child in n:
+        for child in item:
             _walk(child)
 
     _walk(node)
-    return out
+    return pairs
 
 
-def load_label_bounds(labels_geojson: str | Path) -> tuple[np.ndarray, str]:
+def load_labels(
+    labels: str | Path | Mapping[str, list[dict[str, Any]]],
+) -> Mapping[str, list[dict[str, Any]]]:
+    """A `labels.json` path or the mapping itself -> chip filename -> list of pixel boxes."""
+    if isinstance(labels, (str, Path)):
+        labels = json.loads(Path(labels).read_text(encoding="utf-8"))
+    if not isinstance(labels, Mapping):
+        raise ValueError("labels must map chip filename -> list of boxes")
+    return labels
+
+
+def read_label_boxes(labels_geojson: str | Path) -> tuple[np.ndarray, str]:
     """Crown bounding boxes `(N, 4)` as `(minx, miny, maxx, maxy)` in the file CRS, plus that CRS."""
-    fc = json.loads(Path(labels_geojson).read_text(encoding="utf-8"))
-    if not isinstance(fc, dict) or fc.get("type") != "FeatureCollection":
+    collection = json.loads(Path(labels_geojson).read_text(encoding="utf-8"))
+    if not isinstance(collection, dict) or collection.get("type") != "FeatureCollection":
         raise ValueError("labels file must be a GeoJSON FeatureCollection")
-    features = fc.get("features", [])
+    features = collection.get("features", [])
     if not isinstance(features, list):
         raise ValueError("GeoJSON FeatureCollection 'features' must be a list")
     bounds: list[tuple[float, float, float, float]] = []
-    for feat in features:
-        geom = feat.get("geometry") if isinstance(feat, dict) else None
+    for feature in features:
+        geom = feature.get("geometry") if isinstance(feature, dict) else None
         coords = _iter_xy_coords(geom.get("coordinates")) if isinstance(geom, dict) else []
         if coords:
             xs, ys = zip(*coords)
             bounds.append((min(xs), min(ys), max(xs), max(ys)))
-    return np.asarray(bounds, dtype=np.float64).reshape(-1, 4), _parse_geojson_crs(fc)
+    return np.asarray(bounds, dtype=np.float64).reshape(-1, 4), _parse_geojson_crs(collection)
 
 
 def _project_bounds(bounds: np.ndarray, src_crs: Any, dst_crs: Any) -> np.ndarray:
@@ -116,11 +135,11 @@ def _project_bounds(bounds: np.ndarray, src_crs: Any, dst_crs: Any) -> np.ndarra
     transformer = Transformer.from_crs(src_crs, dst_crs, always_xy=True)
     xs = np.stack([bounds[:, 0], bounds[:, 0], bounds[:, 2], bounds[:, 2]], axis=1)
     ys = np.stack([bounds[:, 1], bounds[:, 3], bounds[:, 1], bounds[:, 3]], axis=1)
-    tx, ty = transformer.transform(xs, ys)
-    return np.stack([tx.min(axis=1), ty.min(axis=1), tx.max(axis=1), ty.max(axis=1)], axis=1)
+    out_x, out_y = transformer.transform(xs, ys)
+    return np.stack([out_x.min(axis=1), out_y.min(axis=1), out_x.max(axis=1), out_y.max(axis=1)], axis=1)
 
 
-def boxes_for_chip(
+def chip_boxes(
     chip_path: str | Path,
     *,
     label_bounds: np.ndarray,
@@ -137,23 +156,29 @@ def boxes_for_chip(
     if len(label_bounds) == 0:
         return []
 
-    b = _project_bounds(label_bounds, labels_crs, crs)
-    x = np.stack([b[:, 0], b[:, 0], b[:, 2], b[:, 2]], axis=1)
-    y = np.stack([b[:, 1], b[:, 3], b[:, 1], b[:, 3]], axis=1)
+    projected = _project_bounds(label_bounds, labels_crs, crs)
+    corner_x = np.stack([projected[:, 0], projected[:, 0], projected[:, 2], projected[:, 2]], axis=1)
+    corner_y = np.stack([projected[:, 1], projected[:, 3], projected[:, 1], projected[:, 3]], axis=1)
     inv = ~transform
     # Explicit affine maths (same reason as georef.py): works across `affine` versions.
-    cols = inv.a * x + inv.b * y + inv.c
-    rows = inv.d * x + inv.e * y + inv.f
+    cols = inv.a * corner_x + inv.b * corner_y + inv.c
+    rows = inv.d * corner_x + inv.e * corner_y + inv.f
     x1, x2 = np.clip(cols.min(axis=1), 0, width), np.clip(cols.max(axis=1), 0, width)
     y1, y2 = np.clip(rows.min(axis=1), 0, height), np.clip(rows.max(axis=1), 0, height)
     keep = (x2 > x1) & (y2 > y1)
     return [
-        {"x1": float(a), "y1": float(b_), "x2": float(c), "y2": float(d), "class_id": int(class_id)}
-        for a, b_, c, d in zip(x1[keep], y1[keep], x2[keep], y2[keep])
+        {
+            "x1": float(left),
+            "y1": float(top),
+            "x2": float(right),
+            "y2": float(bottom),
+            "class_id": int(class_id),
+        }
+        for left, top, right, bottom in zip(x1[keep], y1[keep], x2[keep], y2[keep])
     ]
 
 
-def labels_for_chips(
+def build_chip_labels(
     chips_dir: str | Path, labels_dir: str | Path, *, class_id: int = 0
 ) -> dict[str, list[dict[str, float | int]]]:
     """Pixel boxes of every chip in `chips_dir` from one GeoJSON of box or polygon labels. Nothing is copied.
@@ -161,8 +186,31 @@ def labels_for_chips(
     A pipeline step can call this on the chips and labels it was given, so no prepared folder has to be shared
     between isolated steps. Chips without a label get an empty list (negative examples).
     """
-    bounds, crs = load_label_bounds(_find_labels_geojson(labels_dir))
+    bounds, crs = read_label_boxes(_find_labels_geojson(labels_dir))
     return {
-        p.name: boxes_for_chip(p, label_bounds=bounds, labels_crs=crs, class_id=class_id)
-        for p in list_chip_paths(chips_dir)
+        path.name: chip_boxes(path, label_bounds=bounds, labels_crs=crs, class_id=class_id)
+        for path in list_chip_paths(chips_dir)
     }
+
+
+def scale_chip_and_boxes(
+    rgb: np.ndarray, boxes: np.ndarray, pre: PreprocessParams, name: str
+) -> tuple[np.ndarray, np.ndarray]:
+    """Scale an RGB chip exactly as at serving time, and its `(N, 4)` XYXY chip-pixel boxes with it.
+
+    Returns the `(3, H', W')` float32 image and the scaled boxes as float32.
+    """
+    scale = chip_scale(
+        name, rgb.shape[1], pre.model_gsd_m, height_px=rgb.shape[0], max_input_px=pre.max_input_px
+    )
+    image, meta = preprocess_rgb(rgb, scale)
+    factors = np.asarray([meta.scale_x, meta.scale_y, meta.scale_x, meta.scale_y], dtype=np.float32)
+    return image, np.asarray(boxes, dtype=np.float32) * factors
+
+
+def flip_chip_and_boxes(image: np.ndarray, boxes: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Mirror a `(3, H, W)` image left-right, and its `(N, 4)` XYXY boxes with it."""
+    flipped = np.ascontiguousarray(image[:, :, ::-1])
+    flipped_boxes = np.asarray(boxes, dtype=np.float32).copy()
+    flipped_boxes[:, [0, 2]] = image.shape[2] - boxes[:, [2, 0]]
+    return flipped, flipped_boxes

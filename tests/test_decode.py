@@ -1,6 +1,6 @@
 import numpy as np
 
-from td_hot.decode import decode_detections, nms_xyxy
+from td_hot.decode import decode_detections, nms
 from td_hot.params import PostprocessParams
 
 
@@ -50,5 +50,5 @@ def test_cap_of_300_detections():
 def test_nms_xyxy_keeps_highest_score_first():
     boxes = np.array([[0, 0, 10, 10], [1, 1, 11, 11], [50, 50, 60, 60]], np.float32)
     scores = np.array([0.5, 0.9, 0.4], np.float32)
-    assert nms_xyxy(boxes, scores, 0.3) == [1, 2]
-    assert nms_xyxy(np.zeros((0, 4)), np.zeros(0), 0.3) == []
+    assert nms(boxes, scores, 0.3) == [1, 2]
+    assert nms(np.zeros((0, 4)), np.zeros(0), 0.3) == []

@@ -19,6 +19,7 @@ from .params import IMAGE_MEAN, IMAGE_STD, TOPK_CANDIDATES, PostprocessParams
 
 log = logging.getLogger(__name__)
 
+# ONNX operator-set version written into the file. The runtime must support 17 or newer.
 OPSET = 17
 INPUT_NAME = "image"
 OUTPUT_NAMES = ("boxes", "scores", "labels")
@@ -53,8 +54,8 @@ def build_retinanet(weights_path: str | Path | None = None):
     return model.eval()
 
 
-def level2_network(model):
-    """Wrap `model` (switched to eval mode) as `image -> (boxes, scores, labels)` candidates before NMS.
+def candidate_detector(model):
+    """Wrap `model` (switched to eval mode) as `image -> (boxes, scores, labels)`: every candidate box before NMS.
 
     Reuses `RetinaNet.postprocess_detections` with the score floor at 0, no cap, and NMS replaced by
     a plain sort by score, so the numbers come from torchvision itself.
@@ -62,38 +63,37 @@ def level2_network(model):
     import torch
     from torchvision.models.detection import retinanet
 
-    def keep_all_by_score(boxes, scores, idxs, iou_threshold):
+    def sort_by_score_without_nms(boxes, scores, idxs, iou_threshold):
         return torch.argsort(scores, descending=True)
 
-    class Level2(torch.nn.Module):
-        def __init__(self, inner):
+    class CandidateDetector(torch.nn.Module):
+        def __init__(self, model):
             super().__init__()
-            self.inner = inner
+            self.model = model
 
         def forward(self, image):
-            m = self.inner
-            saved = (m.score_thresh, m.detections_per_img, retinanet.box_ops.batched_nms)
-            m.score_thresh, m.detections_per_img = 0.0, 10**6
-            retinanet.box_ops.batched_nms = keep_all_by_score
+            saved = (self.model.score_thresh, self.model.detections_per_img, retinanet.box_ops.batched_nms)
+            self.model.score_thresh, self.model.detections_per_img = 0.0, 10**6
+            retinanet.box_ops.batched_nms = sort_by_score_without_nms
             try:
-                out = m([image])[0]
+                detections = self.model([image])[0]
             finally:
-                m.score_thresh, m.detections_per_img, retinanet.box_ops.batched_nms = saved
-            return out["boxes"], out["scores"], out["labels"]
+                self.model.score_thresh, self.model.detections_per_img, retinanet.box_ops.batched_nms = saved
+            return detections["boxes"], detections["scores"], detections["labels"]
 
     # eval() recurses into `model`: torch.onnx.export restores the wrapper's mode afterwards, so a
     # wrapper left in train mode would put the caller's model back into train mode.
-    return Level2(model).eval()
+    return CandidateDetector(model).eval()
 
 
 def export_onnx_bytes(model, *, opset: int = OPSET) -> bytes:
-    """Export `level2_network(model)` with dynamic height and width; validate and return bytes."""
+    """Export `candidate_detector(model)` with dynamic height and width; validate and return bytes."""
     import tempfile
 
     import onnx
     import torch
 
-    net = level2_network(model)
+    net = candidate_detector(model)
     dummy = torch.rand(3, 800, 800)
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "td_hot.onnx"
@@ -124,17 +124,3 @@ def export_onnx_bytes(model, *, opset: int = OPSET) -> bytes:
         len(data) / 1e6,
     )
     return data
-
-
-def main() -> None:
-    import argparse
-
-    ap = argparse.ArgumentParser(description="Export a DeepForest RetinaNet state dict to ONNX (level 2)")
-    ap.add_argument("weights")
-    ap.add_argument("out")
-    args = ap.parse_args()
-    Path(args.out).write_bytes(export_onnx_bytes(build_retinanet(args.weights)))
-
-
-if __name__ == "__main__":
-    main()

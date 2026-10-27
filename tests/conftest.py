@@ -34,7 +34,7 @@ def prepared_dataset(write_chip, tmp_path):
     import json
     import shutil
 
-    from td_hot.dataset import labels_for_chips, spatial_split
+    from td_hot.dataset import build_chip_labels, spatial_split
 
     chips, labels, out = tmp_path / "chips", tmp_path / "labels", tmp_path / "prepared"
     chips.mkdir()
@@ -49,7 +49,7 @@ def prepared_dataset(write_chip, tmp_path):
         "features": [feature],
     }
     (labels / "labels.geojson").write_text(json.dumps(collection), encoding="utf-8")
-    all_labels = labels_for_chips(chips, labels)
+    all_labels = build_chip_labels(chips, labels)
     train, val = spatial_split(sorted(all_labels), 0.5, 42, block_size=4)
     for split, names in (("train", train), ("val", val)):
         (out / split / "images").mkdir(parents=True)

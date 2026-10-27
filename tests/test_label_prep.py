@@ -3,7 +3,7 @@ import json
 import numpy as np
 import pytest
 
-from td_hot.dataset import labels_for_chips
+from td_hot.dataset import build_chip_labels
 
 
 def _labels_geojson_epsg3857(boxes_crs, epsg: str = "EPSG:3857") -> dict:
@@ -47,7 +47,7 @@ def _labels(tmp_path, write_chip, labels, names=("OAM-0-0-19.tif", "OAM-4-0-19.t
     for name in names:
         (chips_dir / name).write_bytes(write_chip(name=name).read_bytes())
     (labels_dir / "labels.geojson").write_text(json.dumps(labels), encoding="utf-8")
-    return labels_for_chips(chips_dir, labels_dir)
+    return build_chip_labels(chips_dir, labels_dir)
 
 
 def test_box_pixels_match_chip_geometry(write_chip, tmp_path):
@@ -93,9 +93,9 @@ def test_chip_without_a_label_gets_an_empty_list(write_chip, tmp_path):
 def test_chip_without_georeferencing_is_rejected(tmp_path):
     from PIL import Image
 
-    from td_hot.dataset import boxes_for_chip
+    from td_hot.dataset import chip_boxes
 
     png = tmp_path / "OAM-524288-524288-20.png"
     Image.new("RGB", (256, 256)).save(png)
     with pytest.raises(ValueError, match="no CRS"):
-        boxes_for_chip(png, label_bounds=np.zeros((1, 4)), labels_crs="EPSG:3857")
+        chip_boxes(png, label_bounds=np.zeros((1, 4)), labels_crs="EPSG:3857")

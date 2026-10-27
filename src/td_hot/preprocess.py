@@ -35,7 +35,7 @@ class PreprocessMeta:
         return self.resized_height / self.height
 
 
-def read_rgb_chip(image_path: str | Path) -> tuple[np.ndarray, Any, Any]:
+def read_chip(image_path: str | Path) -> tuple[np.ndarray, Any, Any]:
     """Read bands 1-3 as uint8 HWC RGB plus the chip's affine transform and CRS.
 
     PNG/JPEG chips have no georeferencing: the transform is the identity and the CRS is `None`.
@@ -49,7 +49,7 @@ def read_rgb_chip(image_path: str | Path) -> tuple[np.ndarray, Any, Any]:
         return np.clip(rgb, 0, 255).astype(np.uint8), src.transform, src.crs
 
 
-def preprocess_array(
+def preprocess_rgb(
     rgb_hwc: np.ndarray, scale: float, *, transform: Any = None, crs: Any = None
 ) -> tuple[np.ndarray, PreprocessMeta]:
     """RGB uint8 chip -> `(3, H', W')` float32 in [0, 1] (CHW, no batch) plus `PreprocessMeta`.
@@ -62,15 +62,15 @@ def preprocess_array(
     h, w, _ = rgb_hwc.shape
     new_h, new_w = max(1, round(h * scale)), max(1, round(w * scale))
     chw = rgb_hwc.astype(np.float32).transpose(2, 0, 1) / 255.0
-    out = np.empty((3, new_h, new_w), dtype=np.float32)
-    for c in range(3):
-        out[c] = np.asarray(
-            Image.fromarray(chw[c]).resize((new_w, new_h), Image.Resampling.BILINEAR), dtype=np.float32
+    resized = np.empty((3, new_h, new_w), dtype=np.float32)
+    for channel in range(3):
+        resized[channel] = np.asarray(
+            Image.fromarray(chw[channel]).resize((new_w, new_h), Image.Resampling.BILINEAR), dtype=np.float32
         )
     meta = PreprocessMeta(
         width=w, height=h, resized_width=new_w, resized_height=new_h, transform=transform, crs=crs
     )
-    return out, meta
+    return resized, meta
 
 
 def preprocess_chip(
@@ -78,7 +78,7 @@ def preprocess_chip(
 ) -> tuple[np.ndarray, PreprocessMeta]:
     """Read a chip named `OAM-<x>-<y>-<z>.<ext>`, derive the scale from its zoom, and preprocess it."""
     cfg = cfg or PreprocessParams()
-    rgb, transform, crs = read_rgb_chip(image_path)
+    rgb, transform, crs = read_chip(image_path)
     scale = chip_scale(
         Path(image_path).name,
         rgb.shape[1],
@@ -86,4 +86,4 @@ def preprocess_chip(
         height_px=rgb.shape[0],
         max_input_px=cfg.max_input_px,
     )
-    return preprocess_array(rgb, scale, transform=transform, crs=crs)
+    return preprocess_rgb(rgb, scale, transform=transform, crs=crs)

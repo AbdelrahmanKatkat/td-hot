@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .decode import decode_detections
-from .georef import detections_to_chip
+from .georef import detections_to_chip_pixels
 from .params import parse_postprocess_params, parse_preprocess_params
 from .postprocess import detections_to_feature_collection
 from .preprocess import PreprocessMeta, preprocess_chip
@@ -14,11 +14,11 @@ from .preprocess import PreprocessMeta, preprocess_chip
 log = logging.getLogger(__name__)
 
 
-def iter_image_paths(input_dir: str | Path) -> list[Path]:
+def list_images(input_dir: str | Path) -> list[Path]:
     """List chip files in a directory (png/tif/jpg)."""
     root = Path(input_dir)
     patterns = ("*.png", "*.tif", "*.tiff", "*.jpg", "*.jpeg")
-    files = sorted(p for pattern in patterns for p in root.glob(pattern))
+    files = sorted(path for pattern in patterns for path in root.glob(pattern))
     if not files:
         raise FileNotFoundError(f"No input images found in {root}")
     return files
@@ -41,7 +41,7 @@ def detect_chip(
     )
     boxes, scores, labels = session.run(None, {session.get_inputs()[0].name: image})[:3]
     dets = decode_detections(boxes, scores, labels, post_cfg)
-    return detections_to_chip(dets, meta), meta
+    return detections_to_chip_pixels(dets, meta), meta
 
 
 def predict_chip(session: Any, image_path: str | Path, params: dict[str, Any] | None) -> dict[str, Any]:
@@ -54,7 +54,7 @@ def predict_session(session: Any, input_images: str | Path, params: dict[str, An
     """Run ONNX prediction for all chips in a directory."""
     features: list[dict[str, Any]] = []
     started = time.time()
-    paths = iter_image_paths(input_images)
+    paths = list_images(input_images)
     for img_path in paths:
         features.extend(predict_chip(session, img_path, params)["features"])
     log.info(

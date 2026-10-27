@@ -50,13 +50,13 @@ def test_graph_has_anchors_and_decode_but_no_nms(model_and_onnx):
 def test_onnx_candidates_match_torch(model_and_onnx, hw):
     import torch
 
-    from td_hot.export import level2_network
+    from td_hot.export import candidate_detector
 
     model, _, session = model_and_onnx
     image = _image(*hw)
     boxes, scores, labels = session.run(None, {"image": image})
     with torch.no_grad():
-        rb, rs, rl = level2_network(model)(torch.from_numpy(image))
+        rb, rs, rl = candidate_detector(model)(torch.from_numpy(image))
     assert boxes.shape == tuple(rb.shape) and boxes.shape[0] > 0
     np.testing.assert_allclose(scores, rs.numpy(), atol=2e-3)
     # Thousands of candidates have near-tied scores, so compare them as a set, not by position.

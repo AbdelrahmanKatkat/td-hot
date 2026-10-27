@@ -17,10 +17,10 @@ WEB_MERCATOR_WIDTH_M = 40075016.68558  # width of the zoom-0 tile at the equator
 
 def parse_oam_tile(name: str) -> tuple[int, int, int]:
     """`(x, y, z)` from an OAM chip file name; anything else raises `ValueError`."""
-    m = OAM_TILE_RE.match(name)
-    if m is None:
+    match = OAM_TILE_RE.match(name)
+    if match is None:
         raise ValueError(f"chip name {name!r} does not match OAM-<x>-<y>-<z>.<ext>")
-    x, y, z = (int(m.group(i)) for i in (1, 2, 3))
+    x, y, z = (int(match.group(i)) for i in (1, 2, 3))
     if z > 30 or x >= 2**z or y >= 2**z:
         raise ValueError(f"chip name {name!r}: tile ({x}, {y}) is outside the zoom-{z} grid")
     return x, y, z

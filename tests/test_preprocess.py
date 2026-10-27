@@ -3,13 +3,13 @@ import pytest
 
 from conftest import CHIP_NAME
 from td_hot.params import PreprocessParams
-from td_hot.preprocess import preprocess_array, preprocess_chip
+from td_hot.preprocess import preprocess_rgb, preprocess_chip
 from td_hot.tiles import chip_scale
 
 
 def test_chip_is_resized_once_to_chw_float_in_unit_range():
     rgb = np.full((256, 256, 3), 128, dtype=np.uint8)
-    image, meta = preprocess_array(rgb, 3.125)
+    image, meta = preprocess_rgb(rgb, 3.125)
     assert image.shape == (3, 800, 800) and image.dtype == np.float32
     assert (meta.resized_width, meta.resized_height) == (800, 800)
     assert (meta.scale_x, meta.scale_y) == (3.125, 3.125)
@@ -19,25 +19,25 @@ def test_chip_is_resized_once_to_chw_float_in_unit_range():
 def test_channels_stay_in_rgb_order():
     rgb = np.zeros((4, 4, 3), dtype=np.uint8)
     rgb[..., 0], rgb[..., 1], rgb[..., 2] = 255, 128, 0
-    image, _ = preprocess_array(rgb, 2.0)
+    image, _ = preprocess_rgb(rgb, 2.0)
     np.testing.assert_allclose(image[:, 3, 3], [1.0, 128 / 255, 0.0], atol=1e-6)
 
 
 def test_scale_below_one_downsizes_and_rounds_the_size():
-    image, meta = preprocess_array(np.zeros((256, 300, 3), dtype=np.uint8), 0.5)
+    image, meta = preprocess_rgb(np.zeros((256, 300, 3), dtype=np.uint8), 0.5)
     assert image.shape == (3, 128, 150) and (meta.width, meta.height) == (300, 256)
-    image, meta = preprocess_array(np.zeros((100, 100, 3), dtype=np.uint8), 2.99)
+    image, meta = preprocess_rgb(np.zeros((100, 100, 3), dtype=np.uint8), 2.99)
     assert image.shape == (3, 299, 299) and meta.scale_x == pytest.approx(2.99)
 
 
 def test_no_long_side_cap():
-    image, _ = preprocess_array(np.zeros((200, 1000, 3), dtype=np.uint8), 4.0)
+    image, _ = preprocess_rgb(np.zeros((200, 1000, 3), dtype=np.uint8), 4.0)
     assert image.shape == (3, 800, 4000)
 
 
 def test_rejects_non_rgb_arrays():
     with pytest.raises(ValueError):
-        preprocess_array(np.zeros((10, 10, 4), dtype=np.uint8), 1.0)
+        preprocess_rgb(np.zeros((10, 10, 4), dtype=np.uint8), 1.0)
 
 
 def test_preprocess_chip_takes_the_scale_from_the_oam_zoom(write_chip):

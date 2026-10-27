@@ -6,7 +6,6 @@ clipping, horizontal-flip augmentation, a frozen encoder and always-frozen Batch
 what `NEON.pt` learned (catastrophic forgetting) while the FPN and the heads adapt to the new imagery.
 """
 
-import json
 import logging
 import math
 import sys
@@ -20,82 +19,15 @@ import numpy as np
 import torch
 from torch.nn.modules.batchnorm import _BatchNorm
 
-from .dataset import list_chip_paths
 from .export import build_retinanet
 from .params import ENCODER_STAGES, PreprocessParams, TrainParams
-from .preprocess import preprocess_array, read_rgb_chip
-from .tiles import chip_scale
+from .detection_dataset import DetectionDataset
 
 log = logging.getLogger(__name__)
 
 LOG_LINES_PER_EPOCH = (
     50  # automatic step logging aims at this many lines per epoch, however large the dataset
 )
-
-
-class DetectionDataset(torch.utils.data.Dataset):
-    """Chips + `labels.json` (from `labels_for_chips`) as torchvision targets.
-
-    Each chip is scaled exactly as at serving time (`preprocess_array`, scale from the OAM zoom) and its boxes are
-    scaled with it. The model's own transform then only normalises and pads. With `augment`, a chip is mirrored
-    left-right with probability 0.5 (DeepForest's training augmentation).
-    """
-
-    def __init__(
-        self,
-        images_dir: str | Path,
-        labels: str | Path | Mapping[str, list[dict[str, Any]]],
-        pre: PreprocessParams,
-        *,
-        names: Sequence[str] | None = None,
-        augment: bool = False,
-        seed: int = 0,
-    ) -> None:
-        self.pre = pre
-        self.augment = augment
-        self.rng = np.random.default_rng(seed)
-        self.paths = list_chip_paths(images_dir)
-        if names is not None:
-            wanted = set(names)
-            self.paths = [p for p in self.paths if p.name in wanted]
-            missing = wanted - {p.name for p in self.paths}
-            if missing:
-                raise ValueError(
-                    f"{len(missing)} named chips not found in {images_dir}, e.g. {sorted(missing)[:3]}"
-                )
-        if not self.paths:
-            raise ValueError(f"No chips found in {images_dir}")
-        if isinstance(labels, (str, Path)):
-            labels = json.loads(Path(labels).read_text(encoding="utf-8"))
-        if not isinstance(labels, Mapping):
-            raise ValueError("labels must map chip filename -> list of boxes")
-        self.labels: Mapping[str, list[dict[str, Any]]] = labels
-
-    def __len__(self) -> int:
-        return len(self.paths)
-
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        path = self.paths[idx]
-        rgb, _, _ = read_rgb_chip(path)
-        scale = chip_scale(
-            path.name,
-            rgb.shape[1],
-            self.pre.model_gsd_m,
-            height_px=rgb.shape[0],
-            max_input_px=self.pre.max_input_px,
-        )
-        scaled, meta = preprocess_array(rgb, scale)
-        boxes = np.asarray(
-            [[b["x1"], b["y1"], b["x2"], b["y2"]] for b in self.labels.get(path.name, [])], dtype=np.float32
-        ).reshape(-1, 4) * np.asarray([meta.scale_x, meta.scale_y] * 2, dtype=np.float32)
-        if self.augment and self.rng.random() < 0.5:
-            scaled = np.ascontiguousarray(scaled[:, :, ::-1])
-            boxes[:, [0, 2]] = scaled.shape[2] - boxes[:, [2, 0]]
-        # One class (`Tree`, id 0); RetinaNet has no background label. Empty box lists are negatives.
-        return torch.from_numpy(scaled), {
-            "boxes": torch.from_numpy(boxes),
-            "labels": torch.zeros(len(boxes), dtype=torch.int64),
-        }
 
 
 @dataclass(frozen=True)
@@ -108,11 +40,6 @@ class TrainResult:
 
 # Called after each epoch with (epoch starting at 1, train loss, validation loss or None).
 EpochCallback = Callable[[int, float, "float | None"], None]
-
-
-def _collate(batch: list[tuple[Any, Any]]) -> tuple[list[Any], list[Any]]:
-    images, targets = zip(*batch)
-    return list(images), list(targets)
 
 
 def _resolve_device(requested: str) -> str:
@@ -150,23 +77,23 @@ def _freeze(model: torch.nn.Module, *, freeze_encoder: bool, unfreeze_from: str 
     """
     if freeze_encoder:
         body = model.backbone.body
-        for p in body.parameters():
-            p.requires_grad_(False)
+        for param in body.parameters():
+            param.requires_grad_(False)
         if unfreeze_from != "none":
             for stage in ENCODER_STAGES[ENCODER_STAGES.index(unfreeze_from) :]:
-                for p in getattr(body, stage).parameters():
-                    p.requires_grad_(True)
+                for param in getattr(body, stage).parameters():
+                    param.requires_grad_(True)
     for module in model.modules():
         if isinstance(module, _BatchNorm):
-            for p in module.parameters():
-                p.requires_grad_(False)
+            for param in module.parameters():
+                param.requires_grad_(False)
 
 
 def _optimizer_groups(model: torch.nn.Module, lr: float, encoder_lr_factor: float) -> list[dict[str, Any]]:
     """Parameter groups: neck and heads at `lr`, the encoder weights that train at `lr * encoder_lr_factor`."""
-    encoder = [p for p in model.backbone.body.parameters() if p.requires_grad]
-    encoder_ids = {id(p) for p in encoder}
-    rest = [p for p in model.parameters() if p.requires_grad and id(p) not in encoder_ids]
+    encoder = [param for param in model.backbone.body.parameters() if param.requires_grad]
+    encoder_ids = {id(param) for param in encoder}
+    rest = [param for param in model.parameters() if param.requires_grad and id(param) not in encoder_ids]
     groups = [{"params": rest, "lr": lr}]
     if encoder:
         groups.append({"params": encoder, "lr": lr * encoder_lr_factor})
@@ -188,11 +115,16 @@ def _lr_schedule(
     return torch.optim.lr_scheduler.LambdaLR(optimizer, factor)
 
 
+def _collate(batch: list[tuple[Any, Any]]) -> tuple[list[Any], list[Any]]:
+    images, targets = zip(*batch)
+    return list(images), list(targets)
+
+
 def _epoch_loader(train_ds: Any, cfg: TrainParams, epoch: int) -> Any:
     """Shuffled loader for one epoch: all tiles, or a fresh random `cfg.epoch_fraction` of them (seeded per epoch)."""
     if cfg.epoch_fraction < 1.0:
-        n = max(1, round(len(train_ds) * cfg.epoch_fraction))
-        keep = np.random.default_rng(cfg.seed + epoch).permutation(len(train_ds))[:n].tolist()
+        count = max(1, round(len(train_ds) * cfg.epoch_fraction))
+        keep = np.random.default_rng(cfg.seed + epoch).permutation(len(train_ds))[:count].tolist()
         train_ds = torch.utils.data.Subset(train_ds, keep)
     return torch.utils.data.DataLoader(
         train_ds,
@@ -211,9 +143,9 @@ def _set_train_mode(model: torch.nn.Module) -> None:
     torchvision itself uses frozen BatchNorm when fine-tuning pretrained detectors.
     """
     model.train()
-    for m in model.modules():
-        if isinstance(m, _BatchNorm):
-            m.eval()
+    for module in model.modules():
+        if isinstance(module, _BatchNorm):
+            module.eval()
 
 
 def _hms(seconds: float) -> str:
@@ -239,13 +171,13 @@ def _run_epoch(
     """
     _set_train_mode(model)
     losses: list[float] = []
-    parts: dict[str, list[float]] = {}
+    part_losses: dict[str, list[float]] = {}
     start, steps = time.time(), len(loader)
     every = log_every or max(1, steps // LOG_LINES_PER_EPOCH)
     with torch.set_grad_enabled(optimizer is not None):
         for step, (images, targets) in enumerate(loader, 1):
-            images = [img.to(device) for img in images]
-            targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+            images = [image.to(device) for image in images]
+            targets = [{name: tensor.to(device) for name, tensor in target.items()} for target in targets]
             loss_dict = model(images, targets)
             loss = sum(loss_dict.values())
             if not torch.isfinite(loss):
@@ -261,11 +193,13 @@ def _run_epoch(
                 if scheduler is not None:
                     scheduler.step()
             losses.append(float(loss.detach().cpu()))
-            for k, v in loss_dict.items():
-                parts.setdefault(k, []).append(float(v.detach().cpu()))
+            for name, part in loss_dict.items():
+                part_losses.setdefault(name, []).append(float(part.detach().cpu()))
             if step % every == 0 or step == steps:
                 spent = time.time() - start
-                recent = " ".join(f"{k}={np.mean(v[-every:]):.4f}" for k, v in parts.items())
+                recent = " ".join(
+                    f"{name}={np.mean(values[-every:]):.4f}" for name, values in part_losses.items()
+                )
                 log.info(
                     "%s step %d/%d loss(last %d)=%.4f [%s] mean=%.4f %.2fs/step eta %s",
                     label, step, steps, every, np.mean(losses[-every:]), recent,
@@ -274,7 +208,7 @@ def _run_epoch(
     return float(np.mean(losses))
 
 
-def train_retinanet(
+def train(
     *,
     train_images_dir: str | Path,
     train_labels: str | Path | Mapping[str, list[dict[str, Any]]],
@@ -303,7 +237,7 @@ def train_retinanet(
     validation chip is used. `epoch_checkpoint_dir` saves the weights of every epoch as `epoch_NN.pt` (the best one
     by loss is returned either way), so epochs can be compared by F1 afterwards.
 
-    Labels are a `labels.json` path or the mapping itself (`dataset.labels_for_chips`); `train_names` / `val_names`
+    Labels are a `labels.json` path or the mapping itself (`dataset.build_chip_labels`); `train_names` / `val_names`
     select chips of one folder, so a pipeline step can split the original chips without copying them.
     """
     _ensure_visible_progress()
@@ -317,16 +251,16 @@ def train_retinanet(
         train_images_dir, train_labels, pre, names=train_names, augment=True, seed=cfg.seed
     )
     if cfg.sample_fraction < 1.0:
-        n = max(1, round(len(train_ds) * cfg.sample_fraction))
-        keep = np.random.default_rng(cfg.seed).permutation(len(train_ds))[:n].tolist()
+        count = max(1, round(len(train_ds) * cfg.sample_fraction))
+        keep = np.random.default_rng(cfg.seed).permutation(len(train_ds))[:count].tolist()
         train_ds = torch.utils.data.Subset(train_ds, keep)
     steps_per_epoch = math.ceil(max(1, round(len(train_ds) * cfg.epoch_fraction)) / cfg.batch_size)
     val_loader = None
     if val_images_dir is not None and val_labels is not None:
         val_ds: Any = DetectionDataset(val_images_dir, val_labels, pre, names=val_names)
         if max_val_chips and max_val_chips < len(val_ds):
-            step = len(val_ds) / max_val_chips
-            val_ds = torch.utils.data.Subset(val_ds, [int(i * step) for i in range(max_val_chips)])
+            stride = len(val_ds) / max_val_chips
+            val_ds = torch.utils.data.Subset(val_ds, [int(i * stride) for i in range(max_val_chips)])
         val_loader = torch.utils.data.DataLoader(
             val_ds,
             batch_size=cfg.batch_size,
@@ -336,7 +270,7 @@ def train_retinanet(
 
     model = build_retinanet(checkpoint_path).to(device)
     _freeze(model, freeze_encoder=cfg.freeze_encoder, unfreeze_from=cfg.unfreeze_from)
-    trainable = [p for p in model.parameters() if p.requires_grad]
+    trainable = [param for param in model.parameters() if param.requires_grad]
     optimizer = torch.optim.SGD(
         _optimizer_groups(model, cfg.learning_rate, cfg.encoder_lr_factor), lr=cfg.learning_rate,
         momentum=0.9, weight_decay=cfg.weight_decay,
@@ -352,7 +286,7 @@ def train_retinanet(
         cfg.batch_size, steps_per_epoch, cfg.epochs, cfg.learning_rate, cfg.scheduler, cfg.warmup_steps,
         cfg.max_grad_norm, cfg.freeze_encoder,
         cfg.unfreeze_from, cfg.encoder_lr_factor,
-        sum(p.numel() for p in model.parameters()) / 1e6, sum(p.numel() for p in trainable) / 1e6,
+        sum(param.numel() for param in model.parameters()) / 1e6, sum(param.numel() for param in trainable) / 1e6,
         pre.model_gsd_m, cfg.seed, checkpoint_path,
     )  # fmt: skip
 
@@ -362,7 +296,7 @@ def train_retinanet(
     started = time.time()
     for epoch in range(cfg.epochs):
         tag = f"epoch {epoch + 1}/{cfg.epochs}"
-        t_epoch = time.time()
+        epoch_started = time.time()
         lr_start = optimizer.param_groups[0]["lr"]
         train_loss = _run_epoch(
             model, _epoch_loader(train_ds, cfg, epoch), device, optimizer,
@@ -376,7 +310,7 @@ def train_retinanet(
         if epoch_checkpoint_dir is not None:
             Path(epoch_checkpoint_dir).mkdir(parents=True, exist_ok=True)
             torch.save(
-                {k: v.detach().cpu() for k, v in model.state_dict().items()},
+                {name: tensor.detach().cpu() for name, tensor in model.state_dict().items()},
                 Path(epoch_checkpoint_dir) / f"epoch_{epoch + 1:02d}.pt",
             )
         monitored = train_loss if val_loss is None else val_loss
@@ -384,7 +318,7 @@ def train_retinanet(
         improved = monitored < best_loss
         if improved:
             best_epoch, best_loss, patience_left = epoch, monitored, cfg.early_stop_patience
-            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            best_state = {name: tensor.detach().cpu().clone() for name, tensor in model.state_dict().items()}
         else:
             patience_left -= 1
         vram = (
@@ -394,7 +328,7 @@ def train_retinanet(
         )
         log.info(
             "%s done in %s: lr=%g->%g train_loss=%.4f val_loss=%s best=%.4f (epoch %d) %s patience_left=%d%s",
-            tag, _hms(time.time() - t_epoch), lr_start, optimizer.param_groups[0]["lr"], train_loss, f"{val_loss:.4f}" if val_loss is not None else "n/a",
+            tag, _hms(time.time() - epoch_started), lr_start, optimizer.param_groups[0]["lr"], train_loss, f"{val_loss:.4f}" if val_loss is not None else "n/a",
             best_loss, best_epoch + 1, "NEW BEST" if improved else "no improvement", patience_left, vram,
         )  # fmt: skip
         if on_epoch_end is not None:

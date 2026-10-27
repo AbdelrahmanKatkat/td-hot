@@ -1,7 +1,7 @@
 """`td-hot`: HOT fAIr DeepForest tree-crown detector helpers."""
 
-from .dataset import labels_for_chips, spatial_split
-from .decode import decode_detections, nms_xyxy
+from .dataset import build_chip_labels, spatial_split
+from .decode import decode_detections, nms
 from .params import (
     PostprocessParams,
     PreprocessParams,
@@ -13,30 +13,34 @@ from .params import (
     parse_train_params,
 )
 from .postprocess import detections_to_feature_collection
-from .preprocess import PreprocessMeta, preprocess_array, preprocess_chip
+from .preprocess import PreprocessMeta, preprocess_chip, preprocess_rgb
 from .serve import predict_chip, predict_session
 from .tiles import chip_scale, tile_gsd_m
 
 __all__ = [
-    "PostprocessParams",
+    # parameters
     "PreprocessParams",
-    "PreprocessMeta",
+    "PostprocessParams",
     "SplitParams",
     "TrainParams",
-    "chip_scale",
-    "decode_detections",
-    "detections_to_feature_collection",
-    "labels_for_chips",
-    "nms_xyxy",
-    "parse_postprocess_params",
     "parse_preprocess_params",
+    "parse_postprocess_params",
     "parse_split_params",
     "parse_train_params",
+    # tiles and dataset
+    "tile_gsd_m",
+    "chip_scale",
+    "build_chip_labels",
+    "spatial_split",
+    # preprocess -> decode -> postprocess
+    "PreprocessMeta",
+    "preprocess_rgb",
+    "preprocess_chip",
+    "nms",
+    "decode_detections",
+    "detections_to_feature_collection",
+    # inference
     "predict_chip",
     "predict_session",
-    "preprocess_chip",
-    "preprocess_array",
-    "spatial_split",
-    "tile_gsd_m",
 ]
-# Optional (train extra, import explicitly): td_hot.export, td_hot.train, td_hot.evaluate
+# Optional (train extra, import explicitly): td_hot.export, td_hot.detection_dataset, td_hot.train, td_hot.evaluate

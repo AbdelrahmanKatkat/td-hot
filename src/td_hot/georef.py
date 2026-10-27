@@ -7,7 +7,9 @@ from pyproj import Transformer
 from .preprocess import PreprocessMeta
 
 
-def resized_to_chip(det: dict[str, float | int], meta: PreprocessMeta) -> tuple[float, float, float, float]:
+def box_to_chip_pixels(
+    det: dict[str, float | int], meta: PreprocessMeta
+) -> tuple[float, float, float, float]:
     """Undo the model resize -> source chip pixels."""
     return (
         det["x1"] / meta.scale_x,
@@ -17,15 +19,15 @@ def resized_to_chip(det: dict[str, float | int], meta: PreprocessMeta) -> tuple[
     )
 
 
-def detections_to_chip(
+def detections_to_chip_pixels(
     dets: list[dict[str, float | int]], meta: PreprocessMeta
 ) -> list[dict[str, float | int]]:
     """Detections in model-input pixels -> the same detections in source-chip pixels."""
-    out = []
+    chip_dets = []
     for det in dets:
-        x1, y1, x2, y2 = resized_to_chip(det, meta)
-        out.append({**det, "x1": x1, "y1": y1, "x2": x2, "y2": y2})
-    return out
+        x1, y1, x2, y2 = box_to_chip_pixels(det, meta)
+        chip_dets.append({**det, "x1": x1, "y1": y1, "x2": x2, "y2": y2})
+    return chip_dets
 
 
 def clip_xyxy_to_image(
@@ -54,5 +56,5 @@ def xyxy_to_epsg4326_polygon(
     ]
     if crs is not None and str(crs) != "EPSG:4326":
         transformer = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
-        return [list(transformer.transform(cx, cy)) for cx, cy in corners_crs]
-    return [list(c) for c in corners_crs]
+        return [list(transformer.transform(crs_x, crs_y)) for crs_x, crs_y in corners_crs]
+    return [list(corner) for corner in corners_crs]

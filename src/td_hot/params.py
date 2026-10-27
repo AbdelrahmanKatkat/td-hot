@@ -95,58 +95,58 @@ class TrainParams:
     seed: int = 42  # shuffling, augmentation and `sample_fraction` subsampling
 
 
-def _get(d: Mapping[str, Any], keys: tuple[str, ...], default: Any) -> Any:
+def _get(mapping: Mapping[str, Any], keys: tuple[str, ...], default: Any) -> Any:
     """First present non-None key wins (canonical key first, then aliases)."""
     for key in keys:
-        if d.get(key) is not None:
-            return d[key]
+        if mapping.get(key) is not None:
+            return mapping[key]
     return default
 
 
-def _as_int(v: Any) -> int:
-    if isinstance(v, bool):
+def _as_int(value: Any) -> int:
+    if isinstance(value, bool):
         raise ValueError("bool is not a valid int here")
-    return int(v)
+    return int(value)
 
 
-def _as_float(v: Any) -> float:
-    if isinstance(v, bool):
+def _as_float(value: Any) -> float:
+    if isinstance(value, bool):
         raise ValueError("bool is not a valid float here")
-    return float(v)
+    return float(value)
 
 
-def _as_bool(v: Any) -> bool:
-    if isinstance(v, bool):
-        return v
-    if isinstance(v, (int, float)):
-        return bool(v)
-    if isinstance(v, str):
-        raw = v.strip().lower()
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        raw = value.strip().lower()
         if raw in {"1", "true", "yes", "y", "on"}:
             return True
         if raw in {"0", "false", "no", "n", "off"}:
             return False
-    raise ValueError(f"Expected bool-like value, got {v!r}")
+    raise ValueError(f"Expected bool-like value, got {value!r}")
 
 
-def _check_unit(name: str, v: float, *, low_open: bool = False) -> float:
-    ok = (0.0 < v <= 1.0) if low_open else (0.0 <= v <= 1.0)
+def _check_unit(name: str, value: float, *, low_open: bool = False) -> float:
+    ok = (0.0 < value <= 1.0) if low_open else (0.0 <= value <= 1.0)
     if not ok:
-        raise ValueError(f"{name} must be in {'(0, 1]' if low_open else '[0, 1]'}, got {v}")
-    return v
+        raise ValueError(f"{name} must be in {'(0, 1]' if low_open else '[0, 1]'}, got {value}")
+    return value
 
 
 def parse_split_params(hyperparameters: Mapping[str, Any] | None) -> SplitParams:
-    hp = hyperparameters or {}
+    given = hyperparameters or {}
     val_ratio = _check_unit(
-        "val_ratio", _as_float(_get(hp, ("val_ratio",), SplitParams.val_ratio)), low_open=True
+        "val_ratio", _as_float(_get(given, ("val_ratio",), SplitParams.val_ratio)), low_open=True
     )
-    block_size = _as_int(_get(hp, ("block_size",), SplitParams.block_size))
+    block_size = _as_int(_get(given, ("block_size",), SplitParams.block_size))
     if block_size < 1:
         raise ValueError(f"block_size must be >= 1, got {block_size}")
     return SplitParams(
         val_ratio=val_ratio,
-        split_seed=_as_int(_get(hp, ("split_seed",), SplitParams.split_seed)),
+        split_seed=_as_int(_get(given, ("split_seed",), SplitParams.split_seed)),
         block_size=block_size,
     )
 
@@ -156,11 +156,11 @@ def parse_preprocess_params(params: Mapping[str, Any] | None) -> PreprocessParam
 
     `max_input_px`: cap on the longest side of the scaled chip (default 1024), which bounds memory at coarse zooms.
     """
-    p = params or {}
-    model_gsd_m = _as_float(_get(p, ("model_gsd_m",), PreprocessParams.model_gsd_m))
+    given = params or {}
+    model_gsd_m = _as_float(_get(given, ("model_gsd_m",), PreprocessParams.model_gsd_m))
     if not 0.005 <= model_gsd_m <= 1.0:
         raise ValueError(f"model_gsd_m must be in [0.005, 1.0] metres, got {model_gsd_m}")
-    max_input_px = _as_int(_get(p, ("max_input_px",), PreprocessParams.max_input_px))
+    max_input_px = _as_int(_get(given, ("max_input_px",), PreprocessParams.max_input_px))
     if not 64 <= max_input_px <= 8192:
         raise ValueError(f"max_input_px must be in [64, 8192] pixels, got {max_input_px}")
     return PreprocessParams(model_gsd_m=model_gsd_m, max_input_px=max_input_px)
@@ -168,37 +168,37 @@ def parse_preprocess_params(params: Mapping[str, Any] | None) -> PreprocessParam
 
 def parse_postprocess_params(params: Mapping[str, Any] | None) -> PostprocessParams:
     """`confidence_threshold` is canonical; `score_thresh` (DeepForest name) is an alias."""
-    p = params or {}
+    given = params or {}
     return PostprocessParams(
         confidence_threshold=_check_unit(
             "confidence_threshold",
             _as_float(
-                _get(p, ("confidence_threshold", "score_thresh"), PostprocessParams.confidence_threshold)
+                _get(given, ("confidence_threshold", "score_thresh"), PostprocessParams.confidence_threshold)
             ),
         ),
         nms_threshold=_check_unit(
             "nms_threshold",
-            _as_float(_get(p, ("nms_threshold", "nms_thresh"), PostprocessParams.nms_threshold)),
+            _as_float(_get(given, ("nms_threshold", "nms_thresh"), PostprocessParams.nms_threshold)),
         ),
     )
 
 
 def parse_train_params(params: Mapping[str, Any] | None) -> TrainParams:
     """Parse training knobs from a flat dict (fAIr strips the `training.` prefix)."""
-    p = params or {}
-    epochs = _as_int(_get(p, ("epochs",), TrainParams.epochs))
-    batch_size = _as_int(_get(p, ("batch_size",), TrainParams.batch_size))
-    learning_rate = _as_float(_get(p, ("learning_rate", "lr"), TrainParams.learning_rate))
-    weight_decay = _as_float(_get(p, ("weight_decay",), TrainParams.weight_decay))
-    patience = _as_int(_get(p, ("early_stop_patience",), TrainParams.early_stop_patience))
-    sample_fraction = _as_float(_get(p, ("sample_fraction",), TrainParams.sample_fraction))
-    epoch_fraction = _as_float(_get(p, ("epoch_fraction",), TrainParams.epoch_fraction))
-    warmup_steps = _as_int(_get(p, ("warmup_steps",), TrainParams.warmup_steps))
-    max_grad_norm = _as_float(_get(p, ("max_grad_norm",), TrainParams.max_grad_norm))
-    scheduler = str(_get(p, ("scheduler",), TrainParams.scheduler)).strip().lower()
-    unfreeze_from = str(_get(p, ("unfreeze_from",), TrainParams.unfreeze_from)).strip().lower()
-    encoder_lr_factor = _as_float(_get(p, ("encoder_lr_factor",), TrainParams.encoder_lr_factor))
-    freeze_encoder = _as_bool(_get(p, ("freeze_encoder", "freeze_backbone"), TrainParams.freeze_encoder))
+    given = params or {}
+    epochs = _as_int(_get(given, ("epochs",), TrainParams.epochs))
+    batch_size = _as_int(_get(given, ("batch_size",), TrainParams.batch_size))
+    learning_rate = _as_float(_get(given, ("learning_rate", "lr"), TrainParams.learning_rate))
+    weight_decay = _as_float(_get(given, ("weight_decay",), TrainParams.weight_decay))
+    patience = _as_int(_get(given, ("early_stop_patience",), TrainParams.early_stop_patience))
+    sample_fraction = _as_float(_get(given, ("sample_fraction",), TrainParams.sample_fraction))
+    epoch_fraction = _as_float(_get(given, ("epoch_fraction",), TrainParams.epoch_fraction))
+    warmup_steps = _as_int(_get(given, ("warmup_steps",), TrainParams.warmup_steps))
+    max_grad_norm = _as_float(_get(given, ("max_grad_norm",), TrainParams.max_grad_norm))
+    scheduler = str(_get(given, ("scheduler",), TrainParams.scheduler)).strip().lower()
+    unfreeze_from = str(_get(given, ("unfreeze_from",), TrainParams.unfreeze_from)).strip().lower()
+    encoder_lr_factor = _as_float(_get(given, ("encoder_lr_factor",), TrainParams.encoder_lr_factor))
+    freeze_encoder = _as_bool(_get(given, ("freeze_encoder", "freeze_backbone"), TrainParams.freeze_encoder))
     for name, ok, value in (
         ("epochs", epochs >= 1, epochs),
         ("batch_size", batch_size >= 1, batch_size),
@@ -233,6 +233,6 @@ def parse_train_params(params: Mapping[str, Any] | None) -> TrainParams:
         encoder_lr_factor=encoder_lr_factor,
         sample_fraction=sample_fraction,
         epoch_fraction=epoch_fraction,
-        device=str(_get(p, ("device",), TrainParams.device)),
-        seed=_as_int(_get(p, ("seed",), TrainParams.seed)),
+        device=str(_get(given, ("device",), TrainParams.device)),
+        seed=_as_int(_get(given, ("seed",), TrainParams.seed)),
     )

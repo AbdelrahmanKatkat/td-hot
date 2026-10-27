@@ -1,4 +1,4 @@
-"""`labels_for_chips` and `DetectionDataset`: training straight from the original chips, without prepared copies."""
+"""`build_chip_labels` and `DetectionDataset`: training straight from the original chips, without prepared copies."""
 
 import json
 
@@ -7,9 +7,9 @@ import pytest
 
 pytest.importorskip("torch")
 
-from td_hot.dataset import labels_for_chips  # noqa: E402
+from td_hot.dataset import build_chip_labels  # noqa: E402
 from td_hot.params import PreprocessParams  # noqa: E402
-from td_hot.train import DetectionDataset  # noqa: E402
+from td_hot.detection_dataset import DetectionDataset  # noqa: E402
 
 
 @pytest.fixture
@@ -20,7 +20,7 @@ def originals(prepared_dataset):
 
 def test_labels_for_chips_matches_the_prepared_labels(prepared_dataset, originals):
     chips, labels = originals
-    mapping = labels_for_chips(chips, labels)
+    mapping = build_chip_labels(chips, labels)
     prepared = {}
     for split in ("train", "val"):
         prepared.update(json.loads((prepared_dataset / split / "labels.json").read_text()))
@@ -32,7 +32,7 @@ def test_labels_for_chips_matches_the_prepared_labels(prepared_dataset, original
 
 def test_dataset_takes_a_mapping_and_a_named_subset(originals):
     chips, labels = originals
-    mapping = labels_for_chips(chips, labels)
+    mapping = build_chip_labels(chips, labels)
     names = sorted(mapping)[:1]
     ds = DetectionDataset(chips, mapping, PreprocessParams(), names=names)
     assert [p.name for p in ds.paths] == names

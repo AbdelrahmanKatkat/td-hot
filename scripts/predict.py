@@ -11,19 +11,23 @@ import json
 import logging
 import sys
 from pathlib import Path
+from typing import Any
 
 import onnxruntime as ort
 
 from td_hot import predict_session
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--onnx", required=True, type=Path)
-    ap.add_argument("--chips", required=True, type=Path)
-    ap.add_argument("--out", required=True, type=Path)
-    ap.add_argument("--params", default="{}", help='JSON, for example {"confidence_threshold": 0.1}')
-    args = ap.parse_args()
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--onnx", required=True, type=Path)
+    parser.add_argument("--chips", required=True, type=Path)
+    parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument("--params", default="{}", help='JSON, for example {"confidence_threshold": 0.1}')
+    return parser
+
+
+def _configure_logging() -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -31,10 +35,22 @@ def main() -> None:
         stream=sys.stdout,
     )
 
+
+def _predict(args: argparse.Namespace) -> dict[str, Any]:
     session = ort.InferenceSession(str(args.onnx), providers=["CPUExecutionProvider"])
-    collection = predict_session(session, args.chips, json.loads(args.params))
-    args.out.write_text(json.dumps(collection), encoding="utf-8")
-    logging.getLogger("predict").info("wrote %d features to %s", len(collection["features"]), args.out)
+    return predict_session(session, args.chips, json.loads(args.params))
+
+
+def _write_geojson(collection: dict[str, Any], out: Path) -> None:
+    out.write_text(json.dumps(collection), encoding="utf-8")
+    logging.getLogger("predict").info("wrote %d features to %s", len(collection["features"]), out)
+
+
+def main() -> None:
+    args = _build_parser().parse_args()
+    _configure_logging()
+    collection = _predict(args)
+    _write_geojson(collection, args.out)
 
 
 if __name__ == "__main__":

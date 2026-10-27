@@ -3,9 +3,9 @@ import pytest
 from pyproj import Transformer
 
 from conftest import CHIP_NAME, FakeSession
-from td_hot.georef import resized_to_chip, xyxy_to_epsg4326_polygon
+from td_hot.georef import box_to_chip_pixels, xyxy_to_epsg4326_polygon
 from td_hot.preprocess import PreprocessMeta
-from td_hot.serve import iter_image_paths, predict_session
+from td_hot.serve import list_images, predict_session
 from td_hot.tiles import chip_scale
 
 
@@ -59,7 +59,7 @@ def test_non_oam_chip_name_fails_loudly(write_chip, tmp_path):
 
 def test_no_images_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
-        iter_image_paths(tmp_path)
+        list_images(tmp_path)
 
 
 def test_resized_to_chip_inverts_resize():
@@ -67,7 +67,7 @@ def test_resized_to_chip_inverts_resize():
         width=256, height=256, resized_width=800, resized_height=800, transform=None, crs=None
     )
     det = {"x1": 100.0, "y1": 40.0, "x2": 200.0, "y2": 120.0}
-    assert resized_to_chip(det, meta) == (32.0, 12.8, 64.0, 38.4)
+    assert box_to_chip_pixels(det, meta) == (32.0, 12.8, 64.0, 38.4)
 
 
 def test_polygon_in_epsg4326_passthrough():

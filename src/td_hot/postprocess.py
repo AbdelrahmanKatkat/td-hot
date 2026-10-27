@@ -23,14 +23,18 @@ def detections_to_feature_collection(
         if x2 <= x1 or y2 <= y1:
             continue
         ring = xyxy_to_epsg4326_polygon(x1, y1, x2, y2, meta.transform, meta.crs)
-        props: dict[str, Any] = {
+        properties: dict[str, Any] = {
             "confidence": round(float(det["confidence"]), 4),
             "class_id": int(det["class_id"]),
             "class_name": CLASS_NAMES.get(int(det["class_id"]), "Tree"),
         }
         if source_name:
-            props["source"] = source_name
+            properties["source"] = source_name
         features.append(
-            {"type": "Feature", "properties": props, "geometry": {"type": "Polygon", "coordinates": [ring]}}
+            {
+                "type": "Feature",
+                "properties": properties,
+                "geometry": {"type": "Polygon", "coordinates": [ring]},
+            }
         )
     return {"type": "FeatureCollection", "features": features}

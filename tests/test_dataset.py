@@ -1,6 +1,8 @@
+import numpy as np
 import pytest
 
-from td_hot.dataset import spatial_split
+from td_hot.dataset import flip_chip_and_boxes, scale_chip_and_boxes, spatial_split
+from td_hot.params import PreprocessParams
 
 
 def _names(n_x: int, n_y: int):
@@ -25,3 +27,21 @@ def test_non_oam_name_raises_and_empty_input():
     with pytest.raises(ValueError, match="OAM"):
         spatial_split(["OAM-1-2-3.tif", "a.tif"], 0.4, 0)
     assert spatial_split([], 0.2, 0) == ([], [])
+
+
+def test_flip_mirrors_image_and_boxes_and_keeps_the_input():
+    image = np.arange(3 * 4 * 6, dtype=np.float32).reshape(3, 4, 6)
+    boxes = np.array([[1, 0, 3, 2]], dtype=np.float32)
+    flipped, flipped_boxes = flip_chip_and_boxes(image, boxes)
+    assert np.array_equal(flipped, image[:, :, ::-1])
+    assert flipped_boxes.tolist() == [[3, 0, 5, 2]]  # 6 - 3, 6 - 1
+    assert boxes.tolist() == [[1, 0, 3, 2]]
+
+
+def test_scale_follows_the_zoom_scale_for_image_and_boxes():
+    rgb = np.zeros((256, 256, 3), dtype=np.uint8)
+    boxes = np.array([[10, 20, 30, 40]], dtype=np.float32)
+    image, scaled = scale_chip_and_boxes(rgb, boxes, PreprocessParams(), "OAM-485915-499567-20.tif")
+    assert image.shape[0] == 3 and image.dtype == np.float32 and image.shape[1] > 256
+    ratio = image.shape[1] / 256
+    assert scaled.dtype == np.float32 and np.allclose(scaled, boxes * ratio)

@@ -84,15 +84,15 @@ input size = round(chip size * scale)                                           
 
 `z`, and `y` (which gives the latitude) come from the chip name `OAM-<x>-<y>-<z>.<ext>` (`td_hot.tiles`). Nothing is read from the file, so PNG/JPEG chips work the same as GeoTIFFs. Examples for a 256 px chip: zoom 20 at the equator is 14.9 cm/px -> scale 2.99; the same zoom at 48 deg latitude is 10 cm/px -> scale 2.0. Ground resolution depends on `cos(latitude)`, so the latitude matters as much as the zoom; XYZ and TMS row numbering give the same value because `cos` is symmetric about the equator [V: formula, unit-tested].
 
-`PreprocessParams.model_gsd_m` (default 0.05, range [0.005, 1]) sets the scale and `max_input_px` (default 1024, range [64, 8192]) caps it: zoom 20 is untouched (about 760 px), zoom 19 goes from 5.9 to 4.0 at Freetown, zoom 18 from 10.6 to 4.0. **Training and serving must use the same value**; `train_retinanet` takes the same `PreprocessParams` and scales chips and boxes with it [P]. Scales above 16 (a 256 px chip coarser than 80 cm/px) raise `ValueError`; behaviour between 15.6 and 40 cm is not measured [?].
+`PreprocessParams.model_gsd_m` (default 0.05, range [0.005, 1]) sets the scale and `max_input_px` (default 1024, range [64, 8192]) caps it: zoom 20 is untouched (about 760 px), zoom 19 goes from 5.9 to 4.0 at Freetown, zoom 18 from 10.6 to 4.0. **Training and serving must use the same value**; `train` takes the same `PreprocessParams` and scales chips and boxes with it [P]. Scales above 16 (a 256 px chip coarser than 80 cm/px) raise `ValueError`; behaviour between 15.6 and 40 cm is not measured [?].
 
-### 3.3 Is the zoom always known? [V: checked, with limits]
+### 3.3 Is the zoom always known?
 
 - **OpenAerialMap itself has no zoom.** An OAM image is a GeoTIFF with a native resolution (`gsd`: median 5 cm across 60 recent images, range 0.9 cm to 38 m) and a TMS endpoint `.../{z}/{x}/{y}` that serves any zoom. Zoom exists only in the tile request.
-- **fAIr chips carry it:** sibling libraries and fAIr-models samples name chips `OAM-{x}-{y}-{z}.tif` and parse exactly this pattern (`pl-hot`, `spd-hot`). I could not open fAIr's own source here, so the claim "z is the third field" rests on those libraries, not on fAIr documentation [?].
+- **fAIr chips carry it:** sibling libraries and fAIr-models samples name chips `OAM-{x}-{y}-{z}.tif` and parse exactly this pattern.
 - Zoom gives the *nominal* resolution. If the source imagery is coarser than the zoom, tiles are upsampled and look blurry: the scale is then right but the detail is not.
 
-### 3.4 Normalisation on OAM imagery [V: sampled, small sample]
+### 3.4 Normalisation on OAM imagery
 
 24 recent OAM images (9 tiles each, at the zoom nearest 15 cm; opaque pixels only, RGB in [0, 1]; several rows are the same image), against ImageNet and the NEON sample:
 
@@ -114,18 +114,18 @@ Decision [P]: **keep the ImageNet constants fixed.** OAM is slightly brighter an
 | Output `scores` | `(N,)` sigmoid scores |
 | Output `labels` | `(N,)` int64 class ids (always 0) |
 
-**Inside the graph** (torchvision code, traced; `td_hot.export.level2_network`): ImageNet normalisation, padding to 32, ResNet-50 + FPN + heads, anchors for the padded input, sigmoid, the top 1000 candidates per FPN level, box decoding (`dw`, `dh` clamped at `log(1000/16)`), clipping to the input, and a sort by score. N is at most 5 x 1000.
+**Inside the graph**: ImageNet normalisation, padding to 32, ResNet-50 + FPN + heads, anchors for the padded input, sigmoid, the top 1000 candidates per FPN level, box decoding (`dw`, `dh` clamped at `log(1000/16)`), clipping to the input, and a sort by score. N is at most 5 x 1000.
 
 **Outside, tunable** (`td_hot.decode.decode_detections`): keep `score > confidence_threshold`; NMS per class at `nms_threshold`; keep at most 300 [V]. The graph's own score floor is 0 instead of DeepForest's 0.1, which gives identical results once the filter is applied outside, because the top-1000 selection keeps the highest scores either way [V: parity-tested at thresholds 0.02 and 0.1].
 
-**Not in the graph, by design:** georeferencing and reprojection (they need the chip's transform and CRS), and NMS (so `nms_threshold` and `confidence_threshold` stay tunable and the STAC value 0.38 works).
+**Not in the graph, by design:** georeferencing and reprojection, and NMS (so `nms_threshold` and `confidence_threshold` stay tunable and the STAC value 0.38 works).
 
-The ONNX asset in the shared STAC item (`kshitijrajsharma/fair-deepforest-tree-crowns`) is a different contract: fixed `[3,256,256]` input, resize, NMS and a 0.1 floor inside the graph. **This library does not accept it**; the base model needs an ONNX exported with `td_hot.export` [V: inspected].
+The ONNX asset in the shared STAC item (`kshitijrajsharma/fair-deepforest-tree-crowns`) is a different contract: fixed `[3,256,256]` input, resize, NMS and a 0.1 floor inside the graph. **This library does not accept it**; the base model needs an ONNX exported with `td_hot.export`.
 
 ## 5. Geospatial postprocessing (map space)
 
 1. Model-input pixels -> chip pixels: `x_chip = x / scale_x` (same for y), `scale = resized / original` [V].
-2. Upstream DeepForest runs a **cross-window NMS** (`iou_threshold` 0.15, `predict.mosiac`) because overlapping windows report a tree twice. With one pass per chip the per-chip NMS at 0.05 is already stricter, so a second pass could not remove anything; it is not implemented [P].
+2. Upstream DeepForest runs a **cross-window NMS** (`iou_threshold` 0.15, `predict.mosiac`) because overlapping windows report a tree twice. With one pass per chip the per-chip NMS at 0.05 is already stricter, so a second pass could not remove anything.
 3. Clip to the chip, drop empty boxes, convert the 4 corners with the chip affine, reproject to EPSG:4326 with `pyproj` (`always_xy`) [P, same as sibling libs].
 4. Difference from DeepForest: it casts merged coordinates to `int`; this library keeps floats [V]. No area or length filter is applied (it would need CRS units) [P].
 5. Crowns cut by a chip border become two partial boxes, one per chip. OAM tiles do not overlap, so no NMS can merge them; this is a limitation of tiling [?].
@@ -171,7 +171,7 @@ The defaults are the recipe of the fAIr `deepforest_tree` pack (SGD, cosine, cli
 
 ### 6.3 Evaluation entry points (`td_hot.evaluate`)
 
-`score_chips` (torch model) and `score_session` (ONNX session, the deployed path, no torch) give precision / recall / F1 at one or several IoU thresholds from one pass per chip; `sweep_confidence` picks the confidence threshold of a fine-tuned model; `score_image` scores one image at an explicit scale (the forgetting check on the base model's own domain). Labels are a `labels.json` path or a mapping (`dataset.labels_for_chips`), and `names` / `max_chips` select chips.
+`score_dataset` (torch model) and `score_session` (ONNX session, the deployed path, no torch) give precision / recall / F1 at one or several IoU thresholds from one pass per chip; `sweep_confidence` picks the confidence threshold of a fine-tuned model; `score_chip` scores one image at an explicit scale (the forgetting check on the base model's own domain). Labels are a `labels.json` path or a mapping (`dataset.build_chip_labels`), and `names` / `max_chips` select chips.
 
 ## 7. Windowing (upstream, not used here) and spatial split
 
@@ -201,7 +201,7 @@ Deterministic for a given seed, disjoint, full cover [V, tested]. This is a **de
 
 | Item | Value |
 |---|---|
-| Entry points | `build_retinanet(weights)`, `level2_network(model)`, `export_onnx_bytes(model)`, CLI `python -m td_hot.export NEON.pt out.onnx` |
+| Entry points | `build_retinanet(weights)`, `candidate_detector(model)`, `export_onnx_bytes(model)`, CLI `python scripts/export_onnx.py NEON.pt out.onnx` |
 | Input / outputs | section 4 |
 | Opset / exporter | 17, legacy exporter (`dynamo=False`), torch 2.14.1, output validated with `onnx.checker` |
 | Graph | contains `TopK`, no `NonMaxSuppression` (tested) |

@@ -12,7 +12,7 @@ import numpy as np
 from .params import DETECTIONS_PER_IMG, PostprocessParams
 
 
-def nms_xyxy(boxes: np.ndarray, scores: np.ndarray, iou_threshold: float) -> list[int]:
+def nms(boxes: np.ndarray, scores: np.ndarray, iou_threshold: float) -> list[int]:
     """Greedy NMS on XYXY boxes; returns kept indices in descending score order."""
     if len(boxes) == 0:
         return []
@@ -26,9 +26,9 @@ def nms_xyxy(boxes: np.ndarray, scores: np.ndarray, iou_threshold: float) -> lis
         rest = order[1:]
         if rest.size == 0:
             break
-        w = np.maximum(0.0, np.minimum(x2[i], x2[rest]) - np.maximum(x1[i], x1[rest]))
-        h = np.maximum(0.0, np.minimum(y2[i], y2[rest]) - np.maximum(y1[i], y1[rest]))
-        inter = w * h
+        overlap_w = np.maximum(0.0, np.minimum(x2[i], x2[rest]) - np.maximum(x1[i], x1[rest]))
+        overlap_h = np.maximum(0.0, np.minimum(y2[i], y2[rest]) - np.maximum(y1[i], y1[rest]))
+        inter = overlap_w * overlap_h
         iou = inter / (areas[i] + areas[rest] - inter + 1e-9)
         order = rest[iou <= iou_threshold]
     return keep
@@ -55,9 +55,9 @@ def decode_detections(
     boxes, scores, labels = boxes[keep], scores[keep], labels[keep]
 
     kept: list[int] = []
-    for label in np.unique(labels):
-        members = np.flatnonzero(labels == label)
-        kept.extend(int(members[i]) for i in nms_xyxy(boxes[members], scores[members], cfg.nms_threshold))
+    for class_id in np.unique(labels):
+        members = np.flatnonzero(labels == class_id)
+        kept.extend(int(members[i]) for i in nms(boxes[members], scores[members], cfg.nms_threshold))
     kept.sort(key=lambda i: -scores[i])
     return [
         {

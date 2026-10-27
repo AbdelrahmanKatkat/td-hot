@@ -7,16 +7,16 @@ import pytest
 pytest.importorskip("torch")
 pytestmark = pytest.mark.integration
 
-from td_hot.evaluate import score_chips  # noqa: E402
+from td_hot.evaluate import score_dataset  # noqa: E402
 from td_hot.params import parse_train_params  # noqa: E402
-from td_hot.train import train_retinanet  # noqa: E402
+from td_hot.train import train  # noqa: E402
 
 
 def test_train_and_evaluate_smoke(prepared_dataset, caplog):
     caplog.set_level(logging.INFO, logger="td_hot.train")
     out = prepared_dataset
     epochs_seen: list = []
-    result = train_retinanet(
+    result = train(
         train_images_dir=out / "train" / "images",
         train_labels=out / "train" / "labels.json",
         val_images_dir=out / "val" / "images",
@@ -41,7 +41,7 @@ def test_train_and_evaluate_smoke(prepared_dataset, caplog):
     assert [e for e, _, _ in epochs_seen] == [1] and epochs_seen[0][2] == result.history["val_loss"][0]
     assert "freeze_encoder=True" in text and "trainable=" in text
 
-    both = score_chips(
+    both = score_dataset(
         result.model,
         images_dir=out / "val" / "images",
         labels_json=out / "val" / "labels.json",
@@ -53,14 +53,14 @@ def test_train_and_evaluate_smoke(prepared_dataset, caplog):
 
 def test_train_from_the_original_chips_like_a_pipeline_step(prepared_dataset):
     """A pack step splits the original chips by name and passes the labels as a mapping: no copies, no shared files."""
-    from td_hot.dataset import labels_for_chips, spatial_split
+    from td_hot.dataset import build_chip_labels, spatial_split
 
     root = prepared_dataset.parent
     chips = root / "chips"
-    labels = labels_for_chips(chips, root / "labels")
+    labels = build_chip_labels(chips, root / "labels")
     train_names, val_names = spatial_split(sorted(labels), 0.5, 42, block_size=4)
     seen = []
-    result = train_retinanet(
+    result = train(
         train_images_dir=chips, train_labels=labels, train_names=train_names,
         val_images_dir=chips, val_labels=labels, val_names=val_names,
         cfg=parse_train_params({"epochs": 1, "device": "cpu", "batch_size": 1}),
@@ -71,15 +71,15 @@ def test_train_from_the_original_chips_like_a_pipeline_step(prepared_dataset):
 
 def test_scoring_one_split_of_a_shared_chips_folder(prepared_dataset):
     """`names` + a labels mapping score only the validation chips of the original folder (what a pack step has)."""
-    from td_hot.dataset import labels_for_chips
+    from td_hot.dataset import build_chip_labels
     from td_hot.evaluate import sweep_confidence
     from td_hot.export import build_retinanet
 
     root = prepared_dataset.parent
-    labels = labels_for_chips(root / "chips", root / "labels")
+    labels = build_chip_labels(root / "chips", root / "labels")
     model = build_retinanet(None).eval()
     one = sorted(labels)[:1]
-    scored = score_chips(
+    scored = score_dataset(
         model, images_dir=root / "chips", labels_json=labels, names=one, params={"device": "cpu"}
     )
     assert scored[0.5]["tp"] + scored[0.5]["fn"] == len(labels[one[0]])
